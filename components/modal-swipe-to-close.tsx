@@ -20,8 +20,13 @@ const CLOSE_PX_PER_MS = 0.6;
 const SETTLE_MS = 220;
 const EXCLUDED = '[data-swipe-close="off"], input[type="range"], canvas, [contenteditable="true"], .ck-editor';
 
+// What a swipe away presses: the pop-up's own swipe action if it has one (data-swipe-close-action — the Calendar's event,
+// being edited, saves as it closes), else its X.
 function closeButtonOf(panel: HTMLElement): HTMLButtonElement | null {
-  return panel.querySelector<HTMLButtonElement>('button[aria-label="Close" i]:not(:disabled)');
+  return (
+    panel.querySelector<HTMLButtonElement>("button[data-swipe-close-action]:not(:disabled)") ??
+    panel.querySelector<HTMLButtonElement>('button[aria-label="Close" i]:not(:disabled)')
+  );
 }
 
 // Whether a swipe down from `target` would scroll something back up first: anything scrolled down between it and the

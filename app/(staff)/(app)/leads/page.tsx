@@ -41,6 +41,7 @@ import { BoardColumnCards, BoardColumnFrame, ColumnCollapseChevrons } from "@/co
 import { columnAutomationAttrs, useColumnAutomations } from "@/components/column-automations";
 import { BoardTitleBar } from "@/components/board-title-bar";
 import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
+import { attachBoardSnapSettle } from "@/lib/board-snap-settle";
 import { scrollBoardToSearchMatch } from "@/lib/board-search-scroll";
 import { useAuth } from "@/lib/auth-context";
 import { authorizedFetch } from "@/lib/api-fetch";
@@ -644,7 +645,17 @@ export default function LeadsPage() {
     leadsBoardScrollRef.current = el;
     setLeadsBoardScrollEl(el);
     leadsBoardArrowKeysCleanupRef.current?.();
-    leadsBoardArrowKeysCleanupRef.current = el ? attachBoardArrowKeyScroll(el) : null;
+    if (!el) {
+      leadsBoardArrowKeysCleanupRef.current = null;
+      return;
+    }
+    const detachArrowKeys = attachBoardArrowKeyScroll(el);
+    // (Phones: a fast fling left between two columns glides onto the nearest once it's stopped.)
+    const detachSnapSettle = attachBoardSnapSettle(el);
+    leadsBoardArrowKeysCleanupRef.current = () => {
+      detachArrowKeys();
+      detachSnapSettle();
+    };
   }, []);
   // Re-run the check immediately on a view-mode toggle (rather than waiting for the next scroll
   // or resize) so switching into/out of board view updates the lock/height state right away.
@@ -4933,7 +4944,7 @@ export default function LeadsPage() {
                     users={leadFilterUsers}
                     value={leadUserFilterInUse}
                     onChange={setLeadUserFilter}
-                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition hover:brightness-95"
+                    className="inline-flex h-9 min-w-9 shrink-0 items-center justify-center gap-1 rounded-full border px-2 transition hover:brightness-95"
                     labelClassName="hidden"
                     style={{ backgroundColor: leadsToolbarPalette.panelBg, color: leadsToolbarPalette.textMuted, borderColor: leadsToolbarPalette.border }}
                   />

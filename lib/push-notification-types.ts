@@ -389,7 +389,7 @@ export function reminderLeadPhrase(minutes: number): string {
 // bell's Notifications list still gets every one. 0 = off (each is sent straight away).
 
 export const PUSH_QUIET_INTERVAL_OPTIONS: readonly ReminderLeadOption[] = [
-  { value: 0, label: "Off — send each one" },
+  { value: 0, label: "Show all" },
   { value: 1, label: "1 minute" },
   { value: 5, label: "5 minutes" },
   { value: 10, label: "10 minutes" },

@@ -1,4 +1,4 @@
-import { notificationText } from "@/lib/notification-messages";
+import { notificationText, notificationWords } from "@/lib/notification-messages";
 import { FieldPath, Timestamp } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
 import { calendarCategoryLevel, normalizeCalendarCategories, type CalendarCategory } from "@/lib/calendar-categories";
@@ -349,6 +349,8 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
         const nowIso = new Date().toISOString();
         const notificationRef = await db.collection("users").doc(uid).collection("notifications").add({
           ...notificationText(projectName ? "calendar_reminder" : "calendar_reminder.no_project", { event: title, project: projectName, when }),
+          // Its line if it goes out with others as one notification ([calendar_reminder.in_group] — without its project).
+          groupLine: notificationWords("calendar_reminder.in_group", "message", { event: title, when }),
           type: "calendar_reminder",
           ...(projectId ? { projectId } : {}),
           companyId,

@@ -6,15 +6,24 @@ import { Check, ChevronDown, LogOut, MailCheck, Pencil, Settings } from "lucide-
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { fetchCompanyDoc, fetchProjects, saveUserProfilePatchDetailed } from "@/lib/firestore-data";
-import { readThemeMode, saveThemeMode, type ThemeMode } from "@/lib/theme-mode";
+import { saveThemeMode, useThemeMode, type ThemeMode } from "@/lib/theme-mode";
 import { dispatchUserColorUpdated } from "@/lib/user-color-sync";
 import { contrastTextForFill, labelFromRoleKey, normalizeRoleKey } from "@/lib/user-profile-format";
-import { SidebarColorPickerPopover, type ColorPickerAnchorRect } from "@/components/sidebar-color-picker-popover";
+import { BadgeColorStudio } from "@/components/badge-color-studio";
 import { VerifyAccountModal } from "@/components/verify-account-modal";
 import { captureGlassModalOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY = "cutsmart_active_company_theme_color";
+
+// Its info boxes (Company, Mobile, Email): the New Project pop-up's cards — rounded, white see-through glass, its top
+// highlight and soft shadow (components/app-shell.tsx, newProjectCardClass).
+// Rounded on a phone (roundedCards); square in the computer's sidebar.
+const PANEL_CARD_CLASS =
+  "border border-[var(--glass-border)] bg-[var(--glass-bg)] px-3.5 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.55),var(--shadow-glass)]";
+
+// Swiped down this far (on a touch screen) and let go, it slides away; less, and it springs back.
+const SWIPE_CLOSE_PX = 60;
 
 function initials(name: string) {
   const parts = String(name || "").trim().split(/\s+/).filter(Boolean).slice(0, 2);
@@ -26,6 +35,7 @@ export function SidebarUserSettingsPanel({
   onRequestClose,
   onRequestLogout,
   largeActions = false,
+  roundedCards = false,
   actionColor = "var(--text-muted)",
 }: {
   isOpen: boolean;
@@ -34,6 +44,8 @@ export function SidebarUserSettingsPanel({
   // The phone menu's: its collapse (V, top middle), Settings and Log out (top right) as that menu's own Settings on the
   // user's bar — 44px, a 20px icon — in actionColor (the menu's text colour there).
   largeActions?: boolean;
+  // Its Company, Mobile and Email boxes with rounded corners (the phone menu's); square otherwise.
+  roundedCards?: boolean;
   actionColor?: string;
 }) {
   const router = useRouter();
@@ -46,23 +58,28 @@ export function SidebarUserSettingsPanel({
   const [companyName, setCompanyName] = useState("");
   const [companyRoleLabel, setCompanyRoleLabel] = useState("");
   const [companyRoleColor, setCompanyRoleColor] = useState("");
-  const [themeMode, setThemeMode] = useState<ThemeMode>("light");
+  // Light or dark, following every change (User Settings' switch too).
+  const themeMode = useThemeMode();
   const [isMobileEditing, setIsMobileEditing] = useState(false);
   const [mobileDraft, setMobileDraft] = useState("");
   const [isNameEditing, setIsNameEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
-  const [isColorPopoverOpen, setIsColorPopoverOpen] = useState(false);
-  const [colorPopoverAnchor, setColorPopoverAnchor] = useState<ColorPickerAnchorRect | null>(null);
+  // Its badge, big, with its colours (a click on the badge) — grown out of the badge (badgeRef).
+  const [isBadgeStudioOpen, setIsBadgeStudioOpen] = useState(false);
+  const [badgeStudioOrigin, setBadgeStudioOrigin] = useState<HTMLElement | null>(null);
+  const badgeRef = useRef<HTMLDivElement | null>(null);
   const [isVerifyBoxOpen, setIsVerifyBoxOpen] = useState(false);
   const [verifyModalOrigin, setVerifyModalOrigin] = useState<GlassModalOrigin>(null);
   const verifyModalOriginElRef = useRef<HTMLElement | null>(null);
 
   const autoSaveTimerRef = useRef<number | null>(null);
+  // A swipe down on it (a touch screen): where it started, and how far down it's come.
+  const swipeRef = useRef<{ x: number; y: number; dy: number; active: boolean } | null>(null);
+  const panelRootRef = useRef<HTMLDivElement | null>(null);
   const pendingSaveRef = useRef(false);
   const isSavingRef = useRef(false);
   const lastSavedSnapshotRef = useRef("");
   const hasLoadedRef = useRef(false);
-  const emblemSwatchRef = useRef<HTMLButtonElement | null>(null);
 
   // queueAutoSave schedules saveProfile to run ~180ms later via setTimeout, but a
   // plain closure over userColor/mobile/displayName would freeze whatever those
@@ -106,12 +123,6 @@ export function SidebarUserSettingsPanel({
       displayName: String(user?.displayName || "").trim(),
     });
   }, [user?.mobile, user?.userColor, user?.displayName]);
-
-  useEffect(() => {
-    // Client-only theme read (avoids SSR hydration mismatch), same as user-settings/page.tsx.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setThemeMode(readThemeMode());
-  }, []);
 
   useEffect(() => {
     if (!isOpen || hasLoadedRef.current) return;
@@ -265,10 +276,7 @@ export function SidebarUserSettingsPanel({
     queueAutoSave();
   };
 
-  const onSelectThemeMode = (mode: ThemeMode) => {
-    setThemeMode(mode);
-    saveThemeMode(mode);
-  };
+  const onSelectThemeMode = (mode: ThemeMode) => saveThemeMode(mode);
 
   const isDarkMode = themeMode === "dark";
 
@@ -294,14 +302,67 @@ export function SidebarUserSettingsPanel({
     queueAutoSave();
   };
 
+  const cardClass = roundedCards ? `rounded-[18px] ${PANEL_CARD_CLASS}` : PANEL_CARD_CLASS;
+
+  const onSwipeStart = (event: React.TouchEvent<HTMLDivElement>) => {
+    swipeRef.current = null;
+    if (event.touches.length !== 1 || (event.target as Element).closest("input, textarea, select")) return;
+    const touch = event.touches[0];
+    swipeRef.current = { x: touch.clientX, y: touch.clientY, dy: 0, active: false };
+  };
+  const onSwipeMove = (event: React.TouchEvent<HTMLDivElement>) => {
+    const swipe = swipeRef.current;
+    const root = panelRootRef.current;
+    if (!swipe || !root) return;
+    const touch = event.touches[0];
+    const dx = touch.clientX - swipe.x;
+    const dy = touch.clientY - swipe.y;
+    if (!swipe.active) {
+      // Sideways or up: not putting it away.
+      if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) {
+        swipeRef.current = null;
+        return;
+      }
+      if (dy < 8) return;
+      swipe.active = true;
+    }
+    swipe.dy = Math.max(0, dy);
+    root.style.transition = "none";
+    root.style.transform = `translateY(${swipe.dy * 0.85}px)`;
+  };
+  const onSwipeEnd = () => {
+    const swipe = swipeRef.current;
+    const root = panelRootRef.current;
+    swipeRef.current = null;
+    if (!swipe?.active || !root) return;
+    root.style.transition = "transform 220ms cubic-bezier(0.22, 1, 0.36, 1)";
+    if (swipe.dy >= SWIPE_CLOSE_PX) {
+      onRequestClose();
+      // (Back in place once it's away, for next time.)
+      window.setTimeout(() => {
+        root.style.transition = "";
+        root.style.transform = "";
+      }, 340);
+      return;
+    }
+    root.style.transform = "";
+  };
+
   return (
-    <div className="flex h-full flex-col pt-1">
+    <div
+      ref={panelRootRef}
+      onTouchStart={onSwipeStart}
+      onTouchMove={onSwipeMove}
+      onTouchEnd={onSwipeEnd}
+      onTouchCancel={onSwipeEnd}
+      className="flex h-full flex-col pt-1"
+    >
       <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center px-1">
         <span aria-hidden="true" />
         <button
           type="button"
           onClick={onRequestClose}
-          className={`inline-flex shrink-0 items-center justify-center justify-self-center transition hover:bg-[var(--panel-muted)] ${largeActions ? "h-11 w-11 rounded-[12px]" : "h-7 w-7 rounded-[8px]"}`}
+          className={`inline-flex shrink-0 items-center justify-center justify-self-center transition hover:bg-[var(--panel-muted)] ${largeActions ? "h-11 w-11 rounded-full" : "h-7 w-7 rounded-full"}`}
           style={{ color: actionColor }}
           aria-label="Back"
           title="Collapse"
@@ -312,7 +373,7 @@ export function SidebarUserSettingsPanel({
           <button
             type="button"
             onClick={() => router.push("/user-settings")}
-            className={`inline-flex shrink-0 items-center justify-center transition hover:bg-[var(--panel-muted)] ${largeActions ? "h-11 w-11 rounded-[12px]" : "h-7 w-7 rounded-[8px]"}`}
+            className={`inline-flex shrink-0 items-center justify-center transition hover:bg-[var(--panel-muted)] ${largeActions ? "h-11 w-11 rounded-full" : "h-7 w-7 rounded-full"}`}
             style={{ color: actionColor }}
             aria-label="User Settings"
             title="User Settings"
@@ -322,7 +383,7 @@ export function SidebarUserSettingsPanel({
           <button
             type="button"
             onClick={onRequestLogout}
-            className={`inline-flex shrink-0 items-center justify-center transition hover:bg-[var(--panel-muted)] ${largeActions ? "h-11 w-11 rounded-[12px]" : "h-7 w-7 rounded-[8px]"}`}
+            className={`inline-flex shrink-0 items-center justify-center transition hover:bg-[var(--panel-muted)] ${largeActions ? "h-11 w-11 rounded-full" : "h-7 w-7 rounded-full"}`}
             style={{ color: actionColor }}
             aria-label="Log out"
             title="Log out"
@@ -335,18 +396,17 @@ export function SidebarUserSettingsPanel({
       <div className="mt-1 flex flex-col items-center text-center">
         <div className="group relative">
           <div
+            ref={badgeRef}
             className="inline-flex h-20 w-20 items-center justify-center rounded-full text-[26px] font-extrabold text-white"
             style={{ backgroundColor: effectiveColor, boxShadow: "var(--shadow-glass)" }}
           >
             {profileInitials}
           </div>
           <button
-            ref={emblemSwatchRef}
             type="button"
             onClick={() => {
-              const rect = emblemSwatchRef.current?.getBoundingClientRect();
-              if (rect) setColorPopoverAnchor({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
-              setIsColorPopoverOpen(true);
+              setBadgeStudioOrigin(badgeRef.current);
+              setIsBadgeStudioOpen(true);
             }}
             aria-label="Change emblem color"
             className="absolute inset-0 flex h-20 w-20 items-center justify-center rounded-full opacity-0 transition-opacity group-hover:opacity-100"
@@ -430,7 +490,7 @@ export function SidebarUserSettingsPanel({
       </div>
 
       <div className="mt-3 mb-3 space-y-3">
-        <div className="border px-3 py-2.5" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
+        <div className={cardClass}>
           <p className="text-[10px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>Company</p>
           <p className="mt-1 truncate text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{companyName || "-"}</p>
           {(companyRoleLabel || user?.role) ? (
@@ -446,7 +506,7 @@ export function SidebarUserSettingsPanel({
           ) : null}
         </div>
 
-        <div className="group border px-3 py-2.5" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
+        <div className={`group ${cardClass}`}>
           <p className="text-[10px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>Mobile</p>
           <div className="mt-1 flex h-7 items-center justify-between gap-2">
             {isMobileEditing ? (
@@ -490,10 +550,7 @@ export function SidebarUserSettingsPanel({
           </div>
         </div>
 
-        <div
-          className="border px-3 py-2.5"
-          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
-        >
+        <div className={cardClass}>
           <div className="flex items-center justify-between gap-2" title="Contact an admin to change your email">
             <p className="text-[10px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>Email</p>
             {user?.verified ? (
@@ -531,19 +588,17 @@ export function SidebarUserSettingsPanel({
         originElRef={verifyModalOriginElRef}
       />
 
-      <SidebarColorPickerPopover
-        isOpen={isColorPopoverOpen}
-        anchorRect={colorPopoverAnchor}
-        currentColor={effectiveColor}
+      <BadgeColorStudio
+        open={isBadgeStudioOpen}
+        originEl={badgeStudioOrigin}
+        color={effectiveColor}
+        initials={profileInitials}
         onSelect={(hex) => {
           setUserColor(hex);
           queueAutoSave();
         }}
-        onUseCompanyDefault={() => {
-          void applyCompanyDefault();
-          setIsColorPopoverOpen(false);
-        }}
-        onClose={() => setIsColorPopoverOpen(false)}
+        onUseCompanyDefault={applyCompanyDefault}
+        onClose={() => setIsBadgeStudioOpen(false)}
       />
     </div>
   );

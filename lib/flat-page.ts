@@ -20,9 +20,9 @@ export function isFlatPage(pathname: string | null | undefined): boolean {
 // otherwise it cuts off the shadows of the cards at the top of the page in a hard line along the bar.
 // The flat pages, Company Settings, Changelog and Project details (their header bars still pin just under
 // the bar — a sticky bar pins inside <main>'s top padding, which is the bar's height then — and the page
-// scrolls under the bar's glass above them). Not Archived: its own bars aren't set up for it. Not User
-// Settings: on a phone its own bar is fixed right under the top tab bar, covering where anything would show.
-const UNDER_BAR_PAGES = new Set(["/company-settings", "/changelog"]);
+// scrolls under the bar's glass above them). Not Archived: its own bars aren't set up for it. User Settings: on a
+// phone its bar (title and search) and its card are fixed under the top tab bar, and the page scrolls on up under them.
+const UNDER_BAR_PAGES = new Set(["/company-settings", "/changelog", "/user-settings"]);
 
 export function startsUnderTopBar(pathname: string | null | undefined): boolean {
   const path = String(pathname || "").replace(/\/+$/, "");

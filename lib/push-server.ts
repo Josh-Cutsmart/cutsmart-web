@@ -51,6 +51,9 @@ export type PushPayload = {
   title: string;
   body: string;
   url: string;
+  // Its line in a notification of several together, if not its message (an event's, without its project). Kept on the
+  // server — not sent to devices.
+  groupLine?: string;
   tag?: string;
   icon?: string;
   badgeCount?: number;
@@ -73,7 +76,7 @@ const PUSH_THROTTLE_COLLECTION = "pushThrottle";
 // How many held notifications are kept word for word (the count keeps going past it).
 const MAX_HELD = 50;
 
-export type HeldPush = { type: string; title: string; body: string; url: string; atMs: number };
+export type HeldPush = { type: string; title: string; body: string; url: string; atMs: number; groupLine?: string };
 
 // One notification standing for several, as a list — a line each (phones and computers show the first
 // few, and the rest when it's expanded): "10 new leads" with the latest few, or for a mix, "5 new
@@ -89,7 +92,7 @@ export function groupedPayload(held: HeldPush[], total: number): PushPayload {
   const urls = Array.from(new Set(held.map((item) => item.url)));
   if (types.length === 1) {
     const phrase = pushGroupPhrase(types[0], total);
-    const latest = held.slice(-GROUP_LIST_LINES).reverse().map((item) => item.body || item.title).filter(Boolean);
+    const latest = held.slice(-GROUP_LIST_LINES).reverse().map((item) => item.groupLine || item.body || item.title).filter(Boolean);
     const more = total - latest.length;
     return {
       title: phrase.charAt(0).toUpperCase() + phrase.slice(1),
@@ -136,7 +139,14 @@ export async function sendPushToUser(
   const quietMs = options.skipQuiet || payload.actions?.length ? 0 : normalizePushQuietMinutes(userSnap.data()?.pushQuietMinutes) * 60_000;
   if (quietMs > 0) {
     const throttleRef = db.collection(PUSH_THROTTLE_COLLECTION).doc(userId);
-    const item: HeldPush = { type: options.type, title: payload.title, body: payload.body, url: payload.url, atMs: Date.now() };
+    const item: HeldPush = {
+      type: options.type,
+      title: payload.title,
+      body: payload.body,
+      url: payload.url,
+      atMs: Date.now(),
+      ...(payload.groupLine ? { groupLine: payload.groupLine } : {}),
+    };
     const decision = await db.runTransaction(async (tx) => {
       const snap = await tx.get(throttleRef);
       const state = (snap.data() ?? {}) as Record<string, unknown>;
@@ -175,7 +185,10 @@ export async function sendPushToUser(
   // sentAt: when it went out — a device that was off or offline gets it later, and the service worker (public/sw.js)
   // gathers those that waited into one notification rather than a pile of them.
   // (groupTitle, groupMore: the wording for when public/sw.js gathers late ones into one — it can't read the file itself.)
-  const body = JSON.stringify({ icon: "/icon-192.png", groupTitle: notificationTemplate("group", "mixed_title"), groupMore: notificationTemplate("group", "more"), ...toSend, ...(badgeCount !== undefined ? { badgeCount } : {}), sentAt: Date.now() });
+  // (Its line for a group stays here.)
+  const { groupLine: _groupLine, ...forDevice } = toSend;
+  void _groupLine;
+  const body = JSON.stringify({ icon: "/icon-192.png", groupTitle: notificationTemplate("group", "mixed_title"), groupMore: notificationTemplate("group", "more"), ...forDevice, ...(badgeCount !== undefined ? { badgeCount } : {}), sentAt: Date.now() });
   await Promise.all(
     subsSnap.docs.map(async (docSnap) => {
       const data = docSnap.data() as { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
@@ -325,6 +338,7 @@ export async function pushStoredNotificationsTogether(uid: string, notificationI
     body: pushNotificationBody(data),
     url: pushNotificationUrl(data),
     atMs,
+    ...(String(data.groupLine || "").trim() ? { groupLine: String(data.groupLine).trim() } : {}),
   }));
   // (Listed soonest first: groupedPayload shows the last of them first.)
   const payload = groupedPayload([...held].reverse(), held.length);
@@ -372,6 +386,8 @@ export async function pushStoredNotification(
       body: pushNotificationBody(claimed),
       url: pushNotificationUrl(claimed),
       tag: notificationId,
+      // (Held for the time between notifications, it goes out in a group with this line.)
+      ...(String(claimed.groupLine || "").trim() ? { groupLine: String(claimed.groupLine).trim() } : {}),
     },
     { type: String(claimed.type || ""), siteOrigin },
   );

@@ -971,6 +971,54 @@ body[data-undo-bar] [data-bottom-bar] {
   animation: sidebar-label-fade-in 180ms ease;
 }
 
+/* Every search box, open — the cursor in it, or something typed in it (components/search-clear-buttons.tsx marks its bar,
+ * which puts the X in the bar's end too): the same look in every one, its edge in the brand colour. (Calendar's phone
+ * search draws that outline round its view switcher and itself together instead: data-search-own-outline.) */
+[data-search-open]:not([data-search-own-outline]) {
+  border-color: var(--brand) !important;
+}
+
+/* …and the same text in every search box (12px, not bold — the Dashboard's size). Not global search's big box
+ * (data-search-keep-type). */
+.cs-app input:is([type="search"], [placeholder^="search" i], [aria-label^="search" i]):not([data-search-keep-type]) {
+  font-size: 12px !important;
+  font-weight: 500 !important;
+}
+
+/* The phone User Settings card's title from one page to the next (CardTitleCrossfade): the old one fading out as the
+ * new one fades in, on the same spot — its Back staying put. */
+.card-title-in {
+  animation: card-title-in 200ms ease both;
+}
+.card-title-out {
+  animation: card-title-out 200ms ease both;
+}
+@keyframes card-title-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes card-title-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card-title-in {
+    animation: none;
+  }
+  .card-title-out {
+    animation: none;
+    opacity: 0;
+  }
+}
+
 @keyframes sidebar-label-fade-in {
   from {
     opacity: 0;
@@ -1696,6 +1744,24 @@ body[data-theme="dark"] .glass-nav-arrow {
 }
 
 *::-webkit-scrollbar-thumb:hover {
+  background-color: var(--custom-scrollbar-thumb-hover);
+}
+
+/* Dropdowns' and glass menus' own scrollbars (components/glass-dropdown.tsx, .glass-menu-squeeze): the quieter thumb —
+   4px and fainter, firming up while it's hovered — as the glass thumb's `subtle` (Nesting's, the Dashboard's page). */
+.glass-menu-squeeze::-webkit-scrollbar,
+[data-glass-dropdown-menu="true"]::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.glass-menu-squeeze::-webkit-scrollbar-thumb,
+[data-glass-dropdown-menu="true"]::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--custom-scrollbar-thumb) 45%, transparent);
+}
+
+.glass-menu-squeeze::-webkit-scrollbar-thumb:hover,
+[data-glass-dropdown-menu="true"]::-webkit-scrollbar-thumb:hover {
   background-color: var(--custom-scrollbar-thumb-hover);
 }
 

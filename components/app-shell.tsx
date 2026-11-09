@@ -7,6 +7,7 @@ import { ViewAsRoleBanner } from "@/components/view-as-role-banner";
 import { useViewAsRole } from "@/lib/view-as-role";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { glassShineStyle } from "@/lib/glass-shine";
+import { REQUEST_LOGOUT_EVENT, type LogoutRequestDetail } from "@/lib/logout-request";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
@@ -238,6 +239,10 @@ const FLOATING_MENU_STYLE = {
 // A section folding away or opening out, and the page highlight's own slide (and fade, for a folded section's page).
 const NAV_GROUP_FOLD_MS = 260;
 const NAV_GROUP_FOLD_TRANSITION = `grid-template-rows ${NAV_GROUP_FOLD_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`;
+// ...and its pages, moving up out of sight with the section's bottom edge (the line under them) as it folds.
+// The slid-up user settings panel's top corners (the sidebar's and the phone menu's).
+const PANEL_TOP_RADIUS_PX = 22;
+const NAV_GROUP_SLIDE_TRANSITION = `transform ${NAV_GROUP_FOLD_MS}ms cubic-bezier(0.22, 1, 0.36, 1), opacity ${NAV_GROUP_FOLD_MS}ms ease`;
 const NAV_HIGHLIGHT_TRANSITION = "top 260ms cubic-bezier(0.22, 1, 0.36, 1), height 260ms cubic-bezier(0.22, 1, 0.36, 1), opacity 200ms ease";
 
 function hasPermissionKey(permissionKeys: string[] | undefined, key: string): boolean {
@@ -487,6 +492,17 @@ export function AppShell({
     undefined,
     logoutConfirmOriginElRef,
   );
+  // ...and from a page (User Settings' log out button — lib/logout-request.ts): the same "Log out?".
+  useEffect(() => {
+    const onRequest = (event: Event) => {
+      const detail = (event as CustomEvent<LogoutRequestDetail>).detail;
+      logoutConfirmOriginElRef.current = detail?.originEl ?? null;
+      setLogoutConfirmOrigin(detail?.origin ?? null);
+      setShowLogoutConfirm(true);
+    };
+    window.addEventListener(REQUEST_LOGOUT_EVENT, onRequest);
+    return () => window.removeEventListener(REQUEST_LOGOUT_EVENT, onRequest);
+  }, []);
   const [isAutoVerifyModalOpen, setIsAutoVerifyModalOpen] = useState(false);
   // Prompts once per freshly-signed-in session (covers both "just registered" and "just logged
   // into an account that's still unverified") — keyed off uid so it never re-fires just because
@@ -3958,18 +3974,30 @@ export function AppShell({
                   the avatar row slides up SidebarUserSettingsPanel (which has its own cog button
                   to the full /user-settings page), instead of a separate bottomNav link straight
                   there. */}
+              {/* As wide as the menu (-mx-3, its padding inside: px-3), so what it cuts off is past the menu's edges, not
+                  the cards' side shadows. */}
               <div
-                className="shrink-0 overflow-hidden border-t border-[var(--panel-border)]"
+                className="relative -mx-3 shrink-0 overflow-hidden border-t border-[var(--panel-border)] px-3"
                 style={{
-                  borderColor: mobileNavHeadingColor,
+                  // The line along its top, fading into a shadow as the settings slide up (as on a computer): where it
+                  // ends, over the menu above it.
+                  borderColor: isUserSettingsPanelOpen ? "transparent" : mobileNavHeadingColor,
                   height: (isUserSettingsPanelOpen ? mobilePanelContentHeight : mobileRestContentHeight) ?? undefined,
-                  transition: "height 320ms cubic-bezier(0.22, 1, 0.36, 1)",
+                  boxShadow: isUserSettingsPanelOpen ? "0 -14px 28px -14px rgba(15, 23, 42, 0.32)" : "none",
+                  // Its top corners rounded while it's up, on the computer's panel's stronger glass (so its shape shows).
+                  borderTopLeftRadius: isUserSettingsPanelOpen ? PANEL_TOP_RADIUS_PX : 0,
+                  borderTopRightRadius: isUserSettingsPanelOpen ? PANEL_TOP_RADIUS_PX : 0,
+                  backgroundColor: isUserSettingsPanelOpen ? "var(--glass-bg-strong)" : "transparent",
+                  transition:
+                    "height 320ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 320ms ease, border-color 320ms ease, border-radius 320ms ease, background-color 320ms ease",
                 }}
               >
                 <div className="grid items-start">
                   <div
                     ref={mobileBottomRestRef}
-                    className="pt-3"
+                    // Anywhere on the bar opens the card above (its cog aside).
+                    onClick={openUserSettingsPanel}
+                    className="cursor-pointer pt-3"
                     style={{
                       gridArea: "1 / 1",
                       opacity: isUserSettingsPanelOpen ? 0 : 1,
@@ -4000,7 +4028,8 @@ export function AppShell({
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
+                        onClick={(event) => {
+                          event.stopPropagation();
                           setMobileNavOpen(false);
                           router.push("/user-settings");
                         }}
@@ -4029,6 +4058,7 @@ export function AppShell({
                       onRequestLogout={(e) => { logoutConfirmOriginElRef.current = e.currentTarget; setLogoutConfirmOrigin(captureGlassModalOrigin(e)); setShowLogoutConfirm(true); }}
                       // Its collapse (V), Settings and Log out as the user's bar's Settings (44px, 20px, the menu's text colour).
                       largeActions
+                      roundedCards
                       actionColor={shellPalette.text}
                     />
                   </div>
@@ -4201,7 +4231,7 @@ export function AppShell({
                       and the arrow that folds it away at the end — just the line between sections when the sidebar's
                       only icons. */}
                   {isSidebarIconOnlyContent ? (
-                    groupIdx > 0 ? <div className="mx-2 my-2 h-px" style={{ backgroundColor: shellPalette.border }} /> : null
+                    groupIdx > 0 ? <div className="mx-2 my-2 h-px" style={{ backgroundColor: mobileNavHeadingColor }} /> : null
                   ) : (
                     <button
                       type="button"
@@ -4212,10 +4242,10 @@ export function AppShell({
                         "sidebar-label-fade-in flex w-full items-center gap-2 px-3 pb-1 text-left text-[10.5px] font-bold uppercase tracking-[0.8px] transition-opacity hover:opacity-75",
                         groupIdx === 0 ? "pt-1" : "pt-3",
                       )}
-                      style={{ color: shellPalette.textMuted }}
+                      style={{ color: mobileNavHeadingColor }}
                     >
                       <span className="min-w-0 truncate">{group.name}</span>
-                      <span aria-hidden="true" className="h-px min-w-3 flex-1" style={{ backgroundColor: shellPalette.border }} />
+                      <span aria-hidden="true" className="h-px min-w-3 flex-1" style={{ backgroundColor: mobileNavHeadingColor }} />
                       <ChevronDown
                         size={13}
                         strokeWidth={2.5}
@@ -4234,7 +4264,17 @@ export function AppShell({
                       transition: animatedNavGroup === group.name ? NAV_GROUP_FOLD_TRANSITION : undefined,
                     }}
                   >
-                    <div className="min-h-0 space-y-0.5 overflow-hidden">
+                    <div className="min-h-0 overflow-hidden">
+                      {/* (Slides up by its own height as the section folds, so its pages go up with the line below them
+                          rather than being cut off where they are — and back down as it opens.) */}
+                      <div
+                        className="space-y-0.5"
+                        style={{
+                          transform: isFolded ? "translateY(-100%)" : "none",
+                          opacity: isFolded ? 0 : 1,
+                          transition: animatedNavGroup === group.name ? NAV_GROUP_SLIDE_TRANSITION : undefined,
+                        }}
+                      >
                       {group.items.map((item) => {
                         const active = pathname?.startsWith(item.href);
                         const Icon = item.icon;
@@ -4252,7 +4292,7 @@ export function AppShell({
                               !active && "hover:bg-[var(--panel-muted)]",
                             )}
                             style={{
-                              color: active ? "var(--brand)" : shellPalette.textMuted,
+                              color: active ? "var(--brand)" : shellPalette.text,
                             }}
                           >
                             <Icon size={17} className="shrink-0" />
@@ -4260,6 +4300,7 @@ export function AppShell({
                           </Link>
                         );
                       })}
+                      </div>
                     </div>
                   </div>
                 </Fragment>
@@ -4285,7 +4326,7 @@ export function AppShell({
                 "flex w-full items-center gap-2.5 rounded-[10px] py-2.5 text-[13px] font-medium transition-colors hover:bg-[var(--panel-muted)]",
                 isSidebarIconOnlyContent ? "justify-center px-0" : "px-3",
               )}
-              style={{ color: shellPalette.textMuted }}
+              style={{ color: shellPalette.text }}
             >
               <Download size={17} className="shrink-0" />
               {!isSidebarIconOnlyContent && <span className="sidebar-label-fade-in min-w-0 truncate">Downloads</span>}
@@ -4322,7 +4363,12 @@ export function AppShell({
               backgroundColor: "var(--glass-bg-strong)",
               backdropFilter: "blur(24px) saturate(180%)",
               WebkitBackdropFilter: "blur(24px) saturate(180%)",
-              transition: "height 320ms cubic-bezier(0.22, 1, 0.36, 1)",
+              // (A shadow along its top while the settings are up: where it ends, over the pages above it — and its top
+              // corners rounded.)
+              boxShadow: isUserSettingsPanelOpen ? "0 -14px 28px -14px rgba(15, 23, 42, 0.32)" : "none",
+              borderTopLeftRadius: isUserSettingsPanelOpen ? PANEL_TOP_RADIUS_PX : 0,
+              borderTopRightRadius: isUserSettingsPanelOpen ? PANEL_TOP_RADIUS_PX : 0,
+              transition: "height 320ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 320ms ease, border-radius 320ms ease",
             }}
           >
             {/* key="icon-only"/"full-width" on these two branches — without an explicit key,
@@ -4354,8 +4400,8 @@ export function AppShell({
                       closeUserSettingsPanel();
                       router.push("/user-settings");
                     }}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-muted)]"
-                    style={{ color: shellPalette.textMuted }}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-full transition hover:bg-[var(--panel-muted)]"
+                    style={{ color: shellPalette.text }}
                     aria-label="Settings"
                     title="Settings"
                   >
@@ -4368,15 +4414,21 @@ export function AppShell({
                       setLogoutConfirmOrigin(captureGlassModalOrigin(e));
                       setShowLogoutConfirm(true);
                     }}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-muted)]"
-                    style={{ color: shellPalette.textMuted }}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-full transition hover:bg-[var(--panel-muted)]"
+                    style={{ color: shellPalette.text }}
                     aria-label="Log out"
                     title="Log out"
                   >
                     <LogOut size={17} />
                   </button>
                 </div>
-                <div ref={bottomRestContentRef} className="border-t pb-3 pt-3" style={{ borderColor: shellPalette.border }}>
+                <div
+                  ref={bottomRestContentRef}
+                  // Anywhere on the bar opens the card above.
+                  onClick={openUserSettingsPanel}
+                  className="cursor-pointer border-t pb-3 pt-3"
+                  style={{ borderColor: shellPalette.border }}
+                >
                   <button
                     type="button"
                     onClick={openUserSettingsPanel}
@@ -4401,7 +4453,9 @@ export function AppShell({
               <div key="full-width" className="grid items-start" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
                 <div
                   ref={bottomRestContentRef}
-                  className="border-t pb-3 pt-3"
+                  // Anywhere on the bar opens the card above (its cog aside).
+                  onClick={openUserSettingsPanel}
+                  className="cursor-pointer border-t pb-3 pt-3"
                   style={{
                     gridArea: "1 / 1",
                     borderColor: shellPalette.border,
@@ -4410,25 +4464,42 @@ export function AppShell({
                     transition: "opacity 200ms ease",
                   }}
                 >
-                  <button
-                    type="button"
-                    onClick={openUserSettingsPanel}
-                    className="flex w-full items-center gap-2 rounded-[10px] px-2 py-2 text-left transition hover:bg-[var(--panel-muted)]"
-                    aria-label="Open user settings"
-                  >
-                    <div
-                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-extrabold text-white"
-                      style={{ backgroundColor: userEmblemColor }}
+                  {/* The bar: click it for the card above; the cog beside the name goes straight to User Settings (as on a
+                      phone). */}
+                  <div className="flex items-center gap-1 pr-1">
+                    <button
+                      type="button"
+                      onClick={openUserSettingsPanel}
+                      className="flex min-w-0 flex-1 items-center gap-2 rounded-[10px] px-2 py-2 text-left transition hover:bg-[var(--panel-muted)]"
+                      aria-label="Open user settings"
                     >
-                      {userInitials}
-                    </div>
-                    <div className="sidebar-label-fade-in min-w-0 flex-1">
-                      <p className="m-0 block truncate text-[12px] font-semibold" style={{ color: shellPalette.text }}>{user?.displayName || "CutSmart User"}</p>
-                      {isDemoMode && (
-                        <span className="block truncate text-[10px] font-semibold" style={{ color: "#B7791F" }}>{isPreviewMode() ? "CutSmart Preview" : "Demo data mode"}</span>
-                      )}
-                    </div>
-                  </button>
+                      <div
+                        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-extrabold text-white"
+                        style={{ backgroundColor: userEmblemColor }}
+                      >
+                        {userInitials}
+                      </div>
+                      <div className="sidebar-label-fade-in min-w-0 flex-1">
+                        <p className="m-0 block truncate text-[12px] font-semibold" style={{ color: shellPalette.text }}>{user?.displayName || "CutSmart User"}</p>
+                        {isDemoMode && (
+                          <span className="block truncate text-[10px] font-semibold" style={{ color: "#B7791F" }}>{isPreviewMode() ? "CutSmart Preview" : "Demo data mode"}</span>
+                        )}
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        router.push("/user-settings");
+                      }}
+                      className="sidebar-label-fade-in inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition hover:bg-[var(--panel-muted)]"
+                      style={{ color: shellPalette.text }}
+                      aria-label="User Settings"
+                      title="User Settings"
+                    >
+                      <Settings size={16} />
+                    </button>
+                  </div>
                 </div>
 
                 <div
@@ -4444,6 +4515,8 @@ export function AppShell({
                     isOpen={isUserSettingsPanelOpen}
                     onRequestClose={closeUserSettingsPanel}
                     onRequestLogout={(e) => { logoutConfirmOriginElRef.current = e.currentTarget; setLogoutConfirmOrigin(captureGlassModalOrigin(e)); setShowLogoutConfirm(true); }}
+                    // Its V, cog and log out in the menu's text colour, as the bar's cog (and the phone's).
+                    actionColor={shellPalette.text}
                   />
                 </div>
               </div>

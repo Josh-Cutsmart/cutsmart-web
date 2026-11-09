@@ -1551,7 +1551,7 @@ function ArchivedPageInner() {
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search"
             aria-label="Search the archive"
-            className={`cs-own-fill h-9 w-full rounded-full border border-[#D7DEE8] pl-9 text-[12px] font-semibold outline-none transition-colors focus:border-[var(--brand)] ${search ? "pr-8" : "pr-3.5"}`}
+            className="cs-own-fill h-9 w-full rounded-full border border-[#D7DEE8] pl-9 pr-3.5 text-[12px] font-semibold outline-none transition-colors focus:border-[var(--brand)]"
             style={{
               backgroundColor: "var(--panel-bg)",
               color: "var(--text-main)",
@@ -1559,17 +1559,6 @@ function ArchivedPageInner() {
               ["--field-border" as string]: "var(--panel-border)",
             }}
           />
-          {search ? (
-            <button
-              type="button"
-              onClick={() => setSearch("")}
-              aria-label="Clear search"
-              className="absolute right-3 top-1/2 -translate-y-1/2"
-              style={{ color: "var(--text-muted)" }}
-            >
-              <X size={14} />
-            </button>
-          ) : null}
         </div>
       </div>
 

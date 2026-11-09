@@ -195,6 +195,7 @@ export function SlideOverPane({
   headerRight,
   topClass = "top-12",
   zIndexClass = "z-[29]",
+  contentTopPx,
   children,
 }: Omit<SlideOverPage, "open"> & {
   title?: string;
@@ -204,6 +205,9 @@ export function SlideOverPane({
   topClass?: string;
   // Deeper pages sit above the ones they open from.
   zIndexClass?: string;
+  // Room at the top of its content: for a page that starts at the very top of the screen, under bars of its own that
+  // stay put (User Settings on a phone) — its content scrolling on up under them.
+  contentTopPx?: number;
   children: ReactNode;
 }) {
   if (!openId || typeof document === "undefined") return null;
@@ -235,7 +239,11 @@ export function SlideOverPane({
           </div>
         </div>
       ) : null}
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4" style={{ paddingBottom: "max(16px, env(safe-area-inset-bottom, 0px))" }}>
+      <div
+        data-slide-over-scroller="true"
+        className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
+        style={{ paddingBottom: "max(16px, env(safe-area-inset-bottom, 0px))", ...(contentTopPx ? { paddingTop: contentTopPx } : {}) }}
+      >
         {children}
       </div>
     </div>,

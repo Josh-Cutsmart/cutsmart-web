@@ -9,12 +9,13 @@ type Crumb = { label: string; color: string; count: number };
 // Which board this is, over its columns (the Dashboard's and Leads' kanban boards): a glass pill with the board's icon
 // on a tile in its colour (Projects blue, Leads purple), its name, and how many are on it — so the two boards, alike
 // otherwise, can't be mistaken for each other. Inside a column's sub-board (the Dashboard's sub-statuses) it's the way
-// back too: a round back arrow, the board's name (back to it as well), then the column's own dot, name and count.
+// back too: a round back arrow in the icon's place (inside the pill, so nothing moves over for it), the board's name
+// (back to it as well), then the column's own dot, name and count.
 //
-// Going into a sub-board and back out slides rather than jumps: the back arrow comes out from behind the pill (its
-// room opening as it fades and grows in, the pill gliding over for it), and the count slides over to the end — its
-// number fading to the column's — uncovering the column's name from behind it as it goes. The other way round on the
-// way back: the count slides back over the name, fading back to the board's number.
+// Going into a sub-board and back out slides rather than jumps: the icon's tile shrinks away as the back arrow grows in
+// on the same spot, and the count slides over to the end — its number fading to the column's — uncovering the
+// column's name from behind it as it goes. The other way round on the way back: the count slides back over the name,
+// fading back to the board's number.
 //
 // Over the board's scroller, which reaches up under it (its columns' shadows need the room — the scroller cuts off
 // whatever's past its edge): so it's above it, and only its own buttons take the pointer, not the row it's in.
@@ -55,32 +56,6 @@ export function BoardTitleBar({
   );
   return (
     <div className={`pointer-events-none relative z-[2] flex shrink-0 items-center ${className ?? ""}`}>
-      {onBack ? (
-        // The back arrow's room (40px and the 8px gap), opening and closing. Not clipped: the arrow comes out from
-        // behind the pill (the pill's drawn over it) rather than being uncovered edge first.
-        <div
-          inert={!inSub}
-          className="grid shrink-0 transition-[grid-template-columns] duration-300 ease-out motion-reduce:transition-none"
-          style={{ gridTemplateColumns: inSub ? "48px" : "0px" }}
-        >
-          <button
-            type="button"
-            onClick={onBack}
-            aria-label={`Back to ${title}`}
-            title={`Back to ${title}`}
-            className="pointer-events-auto inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border transition-[opacity,transform,filter] duration-300 ease-out hover:brightness-95 motion-reduce:transition-none"
-            style={{
-              borderColor: "var(--glass-border)",
-              backgroundColor: "var(--panel-bg)",
-              color: "var(--text-main)",
-              opacity: inSub ? 1 : 0,
-              transform: inSub ? "none" : "translateX(12px) scale(0.6)",
-            }}
-          >
-            <ChevronLeft size={22} strokeWidth={2.25} aria-hidden="true" />
-          </button>
-        </div>
-      ) : null}
       <div
         className="pointer-events-auto relative z-[1] inline-flex h-10 min-w-0 items-center rounded-full border pl-1 pr-3.5"
         style={{
@@ -90,8 +65,42 @@ export function BoardTitleBar({
           WebkitBackdropFilter: "blur(16px) saturate(180%)",
         }}
       >
-        <span className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border" style={glassShineStyle(color)}>
-          <Icon size={16} color="#ffffff" strokeWidth={2.3} aria-hidden="true" />
+        {/* The board's icon on its tile — or, inside a column, the back arrow on the same spot. */}
+        <span className="relative grid h-8 w-8 shrink-0 place-items-center">
+          {/* (Not in the way of the back arrow once it's faded out: shrinking, it's drawn over it.) */}
+          <span
+            aria-hidden={inSub}
+            className="glass-shine col-start-1 row-start-1 inline-flex h-8 w-8 items-center justify-center rounded-full border transition-[opacity,transform] duration-300 ease-out motion-reduce:transition-none"
+            style={glassShineStyle(color, { opacity: inSub ? 0 : 1, pointerEvents: inSub ? "none" : undefined })}
+          >
+            <span
+              className="inline-flex transition-transform duration-300 ease-out motion-reduce:transition-none"
+              style={{ transform: inSub ? "scale(0.6)" : "none" }}
+            >
+              <Icon size={16} color="#ffffff" strokeWidth={2.3} aria-hidden="true" />
+            </span>
+          </span>
+          {onBack ? (
+            <button
+              type="button"
+              onClick={onBack}
+              disabled={!inSub}
+              tabIndex={inSub ? 0 : -1}
+              aria-hidden={!inSub}
+              aria-label={`Back to ${title}`}
+              title={`Back to ${title}`}
+              // The same tile in the board's colour, its icon now the back arrow (the folder's fades out as it fades in).
+              className="glass-shine relative z-[1] col-start-1 row-start-1 inline-flex h-8 w-8 items-center justify-center rounded-full border text-white transition-[opacity,filter] duration-300 ease-out enabled:hover:brightness-105 disabled:pointer-events-none motion-reduce:transition-none"
+              style={glassShineStyle(color, { opacity: inSub ? 1 : 0 })}
+            >
+              <span
+                className="inline-flex transition-transform duration-300 ease-out motion-reduce:transition-none"
+                style={{ transform: inSub ? "none" : "translateX(6px) scale(0.6)" }}
+              >
+                <ChevronLeft size={18} strokeWidth={2.5} aria-hidden="true" />
+              </span>
+            </button>
+          ) : null}
         </span>
         {onBack ? (
           // The board's name: back to it too while in a column (muted then — the column's name is where you are).

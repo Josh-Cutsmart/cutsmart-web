@@ -18,6 +18,7 @@ import {
   HelpCircle,
   LayoutDashboard,
   Lock,
+  LogOut,
   Mail,
   MailCheck,
   Moon,
@@ -53,7 +54,7 @@ import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { fetchUserCalendarShowNonWorkdays, normalizeCalendarShowNonWorkdays, saveUserCalendarShowNonWorkdays } from "@/lib/calendar-data";
 import { GlassDropdown } from "@/components/glass-dropdown";
 import { hedgedAsync } from "@/lib/load-retry";
-import { readThemeMode, saveThemeMode, type ThemeMode } from "@/lib/theme-mode";
+import { saveThemeMode, useThemeMode, type ThemeMode } from "@/lib/theme-mode";
 import {
   readDashboardStatCardsEnabled,
   readMobileTopBarEnabled,
@@ -65,13 +66,15 @@ import {
 import type { ChecklistTemplate } from "@/lib/types";
 import { dispatchUserColorUpdated } from "@/lib/user-color-sync";
 import { contrastTextForFill, labelFromRoleKey, normalizeRoleKey } from "@/lib/user-profile-format";
-import { SidebarColorPickerPopover, type ColorPickerAnchorRect } from "@/components/sidebar-color-picker-popover";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
-import { PUSH_CATEGORY_ICONS, PushNotificationSettings } from "@/components/push-notification-settings";
+import { PUSH_CATEGORY_ICONS, PushNotificationSettings, type RowsCategoryTitle } from "@/components/push-notification-settings";
 import { iconRemoveButtonClass } from "@/components/settings-ui";
 import { PUSH_NOTIFICATION_CATEGORIES } from "@/lib/push-notification-types";
 import { SlideOverPane, useIsPhone, useSlideOverPage } from "@/components/slide-over-page";
 import { useUndo } from "@/components/undo-bar";
+import { useHelpBubble } from "@/components/help-bubble";
+import { BadgeColorStudio } from "@/components/badge-color-studio";
+import { requestLogout } from "@/lib/logout-request";
 
 function newChecklistLocalId(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -94,15 +97,15 @@ function SettingsToggleSwitch({
       aria-checked={checked}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors disabled:opacity-50"
+      className="relative inline-flex h-[28px] w-[48px] shrink-0 items-center rounded-full border transition-colors disabled:opacity-50"
       style={{
         borderColor: checked ? "var(--brand-strong)" : "var(--glass-border)",
         backgroundColor: checked ? "var(--brand-strong)" : "var(--panel-muted)",
       }}
     >
       <span
-        className="inline-block h-3.5 w-3.5 rounded-full shadow transition-transform"
-        style={{ backgroundColor: "#FFFFFF", transform: checked ? "translateX(18px)" : "translateX(2px)" }}
+        className="inline-block h-[22px] w-[22px] rounded-full shadow transition-transform"
+        style={{ backgroundColor: "#FFFFFF", transform: checked ? "translateX(22px)" : "translateX(2px)" }}
       />
     </button>
   );
@@ -119,6 +122,8 @@ function MobileSettingsRow({
   detail,
   accent,
   onClick,
+  help,
+  onHelp,
   children,
 }: {
   icon: LucideIcon;
@@ -127,6 +132,9 @@ function MobileSettingsRow({
   // In the brand colour (e.g. Create Checklist).
   accent?: boolean;
   onClick?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  // What the setting does: shown in a bubble on a tap of the row (not of its switch), not as a line under it.
+  help?: ReactNode;
+  onHelp?: (text: ReactNode, from: HTMLElement) => void;
   children?: ReactNode;
 }) {
   const tone = accent ? "var(--brand-strong)" : "";
@@ -140,25 +148,85 @@ function MobileSettingsRow({
       {children}
     </>
   );
-  return onClick ? (
-    <button type="button" onClick={onClick} className={`${MOBILE_ROW_CLASS} transition active:bg-[var(--panel-muted)]`}>
-      {content}
-    </button>
-  ) : (
-    <div className={MOBILE_ROW_CLASS}>{content}</div>
-  );
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} className={`${MOBILE_ROW_CLASS} transition active:bg-[var(--panel-muted)]`}>
+        {content}
+      </button>
+    );
+  }
+  if (help && onHelp) {
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        aria-label={`${label}: what it does`}
+        onClick={(event) => {
+          // (Its switch or dropdown does its own thing.)
+          if ((event.target as Element).closest("button, [role='switch'], input, select, a, label")) return;
+          onHelp(help, event.currentTarget);
+        }}
+        className={`${MOBILE_ROW_CLASS} cursor-pointer transition active:bg-[var(--panel-muted)]`}
+      >
+        {content}
+      </div>
+    );
+  }
+  return <div className={MOBILE_ROW_CLASS}>{content}</div>;
 }
 
 // Phone: the page's sections, each opening as its own page.
 const USER_SETTINGS_SECTIONS = [
-  { id: "general", label: "General", icon: UserRound },
-  { id: "preferences", label: "Preferences", icon: SlidersHorizontal },
-  { id: "notifications", label: "Notifications", icon: Bell },
-  { id: "checklists", label: "Checklists", icon: ClipboardList },
+  { id: "general", label: "General", icon: UserRound, description: "Your badge, name and contact details, and how the app looks" },
+  { id: "preferences", label: "Preferences", icon: SlidersHorizontal, description: "How the app behaves on this device" },
+  { id: "notifications", label: "Notifications", icon: Bell, description: "What you're told about, and how often" },
+  { id: "checklists", label: "Checklists", icon: ClipboardList, description: "Create reusable checklists" },
 ] as const;
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY = "cutsmart_active_company_theme_color";
+
+// Phone: under the app's top tab bar, the page's bar — its title, then the search under it — then its card (your badge
+// and name; a section's title and Back inside one), all staying put as the page scrolls on up under them. The bar and the
+// tab bar are one sheet of glass, as Project details'.
+const PHONE_TAB_BAR_PX = 48;
+const PHONE_TITLE_ROW_PX = 44;
+const PHONE_SEARCH_ROW_PX = 52;
+const PHONE_BAR_BOTTOM_PX = PHONE_TAB_BAR_PX + PHONE_TITLE_ROW_PX + PHONE_SEARCH_ROW_PX;
+const PHONE_CARD_TOP_PX = PHONE_BAR_BOTTOM_PX + 4;
+const PHONE_CARD_HEIGHT_PX = 84;
+// Where the page's own content starts, under all that.
+const PHONE_CONTENT_TOP_PX = PHONE_CARD_TOP_PX + PHONE_CARD_HEIGHT_PX + 16;
+// <main>'s own top padding on a phone, reaching up under the tab bar (globals.css, main[data-under-bar]).
+const PHONE_MAIN_TOP_PX = 60;
+
+// The phone card's title from one page to the next: the old one fading out over the new one fading in, on the same spot
+// (globals.css, .card-title-in / .card-title-out). Changes within the same page (a switch, a rename) just show.
+function CardTitleCrossfade({ swapKey, children }: { swapKey: string; children: ReactNode }) {
+  const [current, setCurrent] = useState<{ key: string; node: ReactNode }>({ key: swapKey, node: children });
+  const [leaving, setLeaving] = useState<{ key: string; node: ReactNode } | null>(null);
+  if (current.key !== swapKey) {
+    setLeaving(current);
+    setCurrent({ key: swapKey, node: children });
+  }
+  useEffect(() => {
+    if (!leaving) return;
+    const timer = window.setTimeout(() => setLeaving(null), 220);
+    return () => window.clearTimeout(timer);
+  }, [leaving]);
+  return (
+    <div className="grid min-w-0 flex-1 items-center">
+      {leaving ? (
+        <div key={leaving.key} aria-hidden="true" className="card-title-out pointer-events-none col-start-1 row-start-1 min-w-0">
+          {leaving.node}
+        </div>
+      ) : null}
+      <div key={swapKey} className={`col-start-1 row-start-1 min-w-0 ${leaving ? "card-title-in" : ""}`}>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 export default function UserSettingsPage() {
   const router = useRouter();
@@ -200,12 +268,43 @@ export default function UserSettingsPage() {
   // Phone: the first page's search across every setting, and what the Notifications page opens searched for.
   const [settingsSearch, setSettingsSearch] = useState("");
   const [notificationsSearch, setNotificationsSearch] = useState("");
+  // A computer: the section showing on the right (picked from the list on the left).
+  const [desktopSection, setDesktopSection] = useState<string>("general");
+  // Your badge, big, with its colours (a tap on the badge).
+  const [isBadgeStudioOpen, setIsBadgeStudioOpen] = useState(false);
+  // ...and the badge it grows out of (and goes back into).
+  const [badgeStudioOrigin, setBadgeStudioOrigin] = useState<HTMLElement | null>(null);
+  // A setting's explanation, on a tap of its row (phone).
+  const help = useHelpBubble();
+  // Phone: Notifications' open category — its title's shown in the card (push-notification-settings.tsx, rowsTitleInCard).
+  const [notificationCategoryTitle, setNotificationCategoryTitle] = useState<RowsCategoryTitle | null>(null);
+  const isNotificationCategoryOpen = Boolean(notificationCategoryTitle);
   const openSection = (sectionId: string, notificationsQuery = "") => {
     setNotificationsSearch(notificationsQuery);
     sectionSlide.open(sectionId);
   };
   // Phone: a checklist's own page (its items), sliding in over the Checklists page.
   const checklistSlide = useSlideOverPage(sectionSlide.paneRef, "userSettingsChecklist");
+  // Phone: whichever page is in front (the page itself, a section's, a checklist's, a notification category's) scrolled up
+  // under the bar — its glass (and the line under it) shows then, and only then. The one in front is whichever's under
+  // the middle of the screen, below the card.
+  const [phoneScrolledUnder, setPhoneScrolledUnder] = useState(false);
+  useEffect(() => {
+    if (!isPhone) return;
+    const read = () => {
+      const probe = document.elementFromPoint(window.innerWidth / 2, Math.min(window.innerHeight - 2, PHONE_CONTENT_TOP_PX + 40));
+      const scroller = probe?.closest<HTMLElement>("[data-slide-over-scroller]") ?? document.querySelector("main");
+      setPhoneScrolledUnder((scroller?.scrollTop ?? 0) > 2);
+    };
+    read();
+    // (Again once a page has slid in or out.)
+    const settled = window.setTimeout(read, 340);
+    document.addEventListener("scroll", read, { capture: true, passive: true });
+    return () => {
+      window.clearTimeout(settled);
+      document.removeEventListener("scroll", read, { capture: true });
+    };
+  }, [isPhone, sectionSlide.isOpen, sectionSlide.openId, checklistSlide.isOpen, isNotificationCategoryOpen]);
   const { canInstall: pwaCanInstall, isInstalled: pwaIsInstalled } = usePwaInstall();
   const [isIosInstallHint, setIsIosInstallHint] = useState(false);
   useEffect(() => {
@@ -247,9 +346,8 @@ export default function UserSettingsPage() {
   }, [user?.uid]);
   const [companyRoleLabel, setCompanyRoleLabel] = useState("");
   const [companyRoleColor, setCompanyRoleColor] = useState("");
-  const [themeMode, setThemeMode] = useState<ThemeMode>("light");
-  const [isColorPopoverOpen, setIsColorPopoverOpen] = useState(false);
-  const [colorPopoverAnchor, setColorPopoverAnchor] = useState<ColorPickerAnchorRect | null>(null);
+  // Light or dark, following every change (the sidebar's slide-up card too).
+  const themeMode = useThemeMode();
   const [isNameEditing, setIsNameEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [isMobileEditing, setIsMobileEditing] = useState(false);
@@ -292,7 +390,6 @@ export default function UserSettingsPage() {
   const pendingSaveRef = useRef(false);
   const isSavingRef = useRef(false);
   const lastSavedSnapshotRef = useRef("");
-  const emblemSwatchRef = useRef<HTMLButtonElement | null>(null);
   // Phone: the badge in General's Badge Colour row (the colour picker opens beside it).
   const phoneColorSwatchRef = useRef<HTMLSpanElement | null>(null);
 
@@ -352,10 +449,6 @@ export default function UserSettingsPage() {
       notifyAsCreator: user?.notifyAsCreator !== false,
     });
   }, [user?.displayName, user?.mobile, user?.userColor, user?.notifyAsCreator]);
-
-  useEffect(() => {
-    setThemeMode(readThemeMode());
-  }, []);
 
   useEffect(() => {
     const load = async () => {
@@ -538,10 +631,7 @@ export default function UserSettingsPage() {
     queueAutoSave();
   };
 
-  const onSelectThemeMode = (mode: ThemeMode) => {
-    setThemeMode(mode);
-    saveThemeMode(mode);
-  };
+  const onSelectThemeMode = (mode: ThemeMode) => saveThemeMode(mode);
 
   const startEditingName = () => {
     setNameDraft(activeDisplayName);
@@ -813,208 +903,6 @@ export default function UserSettingsPage() {
     </div>
   );
 
-  // Each section's contents on a computer (the cards below); a phone has its own rows further down.
-  const generalContent = (
-    <>
-      <div className="flex flex-col items-center text-center">
-        <div className="group relative">
-          <div
-            className="inline-flex h-24 w-24 items-center justify-center rounded-full text-[30px] font-extrabold text-white"
-            style={{ backgroundColor: effectiveColor, boxShadow: "var(--shadow-glass)" }}
-          >
-            {profileInitials}
-          </div>
-          <button
-            ref={emblemSwatchRef}
-            type="button"
-            onClick={() => {
-              const rect = emblemSwatchRef.current?.getBoundingClientRect();
-              if (rect) setColorPopoverAnchor({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
-              setIsColorPopoverOpen(true);
-            }}
-            aria-label="Change emblem color"
-            className="absolute inset-0 flex h-24 w-24 items-center justify-center rounded-full opacity-0 transition-opacity group-hover:opacity-100"
-            style={{ backgroundColor: "rgba(0,0,0,0.45)" }}
-          >
-            <Pencil size={22} color="#ffffff" />
-          </button>
-        </div>
-        <div className="mt-4 flex h-9 items-center justify-center">
-          {isNameEditing ? (
-            <div className="flex items-center gap-1.5">
-              <input
-                autoFocus
-                value={nameDraft}
-                onChange={(e) => setNameDraft(e.target.value)}
-                onBlur={commitNameEdit}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                }}
-                className="h-9 w-[190px] rounded-[8px] border px-2 text-center text-[18px] font-extrabold outline-none"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-              />
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={commitNameEdit}
-                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border"
-                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-                aria-label="Save name"
-              >
-                <Check size={16} />
-              </button>
-            </div>
-          ) : (
-            <div className="group relative inline-flex max-w-full items-center">
-              <h2 className="truncate text-[20px] font-extrabold leading-tight" style={{ color: "var(--text-main)" }}>
-                {activeDisplayName}
-              </h2>
-              <button
-                type="button"
-                onClick={startEditingName}
-                className="absolute left-full ml-1.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-[var(--panel-muted)]"
-                style={{ color: "var(--text-muted)" }}
-                aria-label="Edit name"
-              >
-                <Pencil size={13} />
-              </button>
-            </div>
-          )}
-        </div>
-        <p className="mt-1 flex items-center gap-1.5 text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>
-          <Mail size={13} />
-          {user?.email || "-"}
-          {!user?.verified && (
-            <button
-              type="button"
-              onClick={() => setIsVerifyBoxOpen((prev) => !prev)}
-              className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.6px]"
-              style={{ backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
-            >
-              <MailCheck size={10} />
-              Unverified
-            </button>
-          )}
-        </p>
-        {!user?.verified && isVerifyBoxOpen && renderVerifyBox("mt-3 w-full space-y-2 rounded-[12px] border p-3 text-left")}
-      </div>
-
-      <div className="mt-5 flex items-center justify-center">
-        <button
-          type="button"
-          role="switch"
-          aria-checked={isDarkMode}
-          aria-label={`Theme mode: ${isDarkMode ? "Dark" : "Light"}`}
-          onClick={() => onSelectThemeMode(isDarkMode ? "light" : "dark")}
-          className="relative inline-flex h-10 w-[148px] items-center rounded-[999px] border px-1 transition-colors"
-          style={{
-            borderColor: isDarkMode ? "var(--brand-strong)" : "var(--glass-border)",
-            backgroundImage: isDarkMode ? "var(--brand-gradient)" : "none",
-            backgroundColor: isDarkMode ? undefined : "var(--panel-muted)",
-          }}
-        >
-          <span
-            className="absolute left-1 top-[3px] h-[32px] w-[67px] rounded-[999px] transition-transform"
-            style={{
-              transform: isDarkMode ? "translateX(71px)" : "translateX(-1px)",
-              backgroundColor: "var(--panel-bg)",
-              border: "1px solid var(--glass-border)",
-              boxShadow: "var(--shadow-glass)",
-            }}
-          />
-          <span className="relative z-10 flex w-full items-center justify-between px-3 text-[12px] font-semibold">
-            <span
-              style={{
-                color: isDarkMode ? "#ffffff" : "var(--brand-strong)",
-                transform: isDarkMode ? "scale(0.92)" : "scale(1.05)",
-                transformOrigin: "left center",
-                transition: "transform 140ms ease, color 140ms ease",
-              }}
-            >
-              Light
-            </span>
-            <span
-              style={{
-                color: isDarkMode ? "#ffffff" : "var(--text-muted)",
-                transform: `${isDarkMode ? "scale(1.05)" : "scale(0.92)"} translateX(-2px)`,
-                transformOrigin: "right center",
-                transition: "transform 140ms ease, color 140ms ease",
-              }}
-            >
-              Dark
-            </span>
-          </span>
-        </button>
-      </div>
-
-      <div className="mt-5 space-y-3">
-        <div className="rounded-[14px] border px-4 py-3" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
-          <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>
-            <Building2 size={11} />
-            Company
-          </p>
-          <p className="mt-1 text-[14px] font-semibold" style={{ color: "var(--text-main)" }}>{companyName || "-"}</p>
-          {(companyRoleLabel || user?.role) ? (
-            <span
-              className="mt-1.5 inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium"
-              style={{
-                backgroundColor: companyRoleColor || "#7D99B3",
-                color: contrastTextForFill(companyRoleColor || "#7D99B3"),
-              }}
-            >
-              {companyRoleLabel || user?.role}
-            </span>
-          ) : null}
-        </div>
-        <div className="group rounded-[14px] border px-4 py-3" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
-          <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>
-            <Smartphone size={11} />
-            Mobile
-          </p>
-          <div className="mt-1 flex h-8 items-center justify-between gap-2">
-            {isMobileEditing ? (
-              <>
-                <input inputMode="tel"
-                  autoFocus
-                  value={mobileDraft}
-                  onChange={(e) => setMobileDraft(e.target.value)}
-                  onBlur={commitMobileEdit}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                  }}
-                  className="h-8 min-w-0 flex-1 rounded-[8px] border px-2 text-[14px] outline-none"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                />
-                <button
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={commitMobileEdit}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border"
-                  style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-                  aria-label="Save mobile number"
-                >
-                  <Check size={14} />
-                </button>
-              </>
-            ) : (
-              <>
-                <p className="truncate text-[14px] font-semibold" style={{ color: "var(--text-main)" }}>{mobile || "-"}</p>
-                <button
-                  type="button"
-                  onClick={startEditingMobile}
-                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-[var(--panel-bg)]"
-                  style={{ color: "var(--text-muted)" }}
-                  aria-label="Edit mobile number"
-                >
-                  <Pencil size={13} />
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      </div>
-    </>
-  );
   // Per-device ones (lib/ui-preferences.ts) save straight away; Notifications as Creator is part of the profile.
   // A row's switch — or, with `control`, that instead (e.g. a dropdown of choices).
   const preferenceRows: Array<{
@@ -1110,34 +998,22 @@ export default function UserSettingsPage() {
       phone: false,
     },
   ];
-  const preferencesContent = (
-    <div className="space-y-4">
-      {preferenceRows.map((row) => {
-        const Icon = row.icon;
-        return (
-          <div key={row.id} className="flex items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2.5">
-              <Icon size={16} style={{ color: "var(--text-muted)" }} />
-              <div className="min-w-0">
-                <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{row.label}</p>
-                <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-                  {row.description}
-                </p>
-              </div>
-            </div>
-            {row.control ?? <SettingsToggleSwitch checked={row.checked} onChange={row.onChange} />}
-          </div>
-        );
-      })}
+  const desktopPreferences = (
+    <div className={MOBILE_ROWS_CARD_CLASS} style={glassCardStyle}>
+      {preferenceRows.map((row) => (
+        <MobileSettingsRow key={row.id} icon={row.icon} label={row.label} detail={row.description}>
+          {row.control ?? <SettingsToggleSwitch checked={row.checked} onChange={row.onChange} />}
+        </MobileSettingsRow>
+      ))}
     </div>
   );
-  const checklistsHelp = <>Create reusable checklists here, then add them to a project from Design {"->"} Project Management.</>;
+  const checklistsHelp = <>Create reusable checklists</>;
   const createChecklistButton = (
     <button
       type="button"
       onClick={openNewChecklistEditor}
-      className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
-      style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+      className="glass-shine inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-4 text-[12.5px] font-semibold text-white transition hover:brightness-105"
+      style={glassShineStyle("var(--brand)")}
     >
       <Plus size={14} />
       Create Checklist
@@ -1205,8 +1081,8 @@ export default function UserSettingsPage() {
       <button
         type="button"
         onClick={() => setChecklistRowsDraft((prev) => [...prev, ""])}
-        className="mt-3 inline-flex h-9 items-center gap-1.5 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
-        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+        className="glass-shine glass-shine-neutral mt-3 inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-[12.5px] font-medium transition hover:brightness-95"
+        style={{ color: "var(--text-main)" }}
       >
         <Plus size={14} />
         Add Row
@@ -1217,16 +1093,16 @@ export default function UserSettingsPage() {
           type="button"
           disabled={!checklistNameDraft.trim() || !checklistRowsDraft.some((v) => v.trim())}
           onClick={() => void saveChecklistDraft()}
-          className="h-10 rounded-[10px] px-4 text-[12px] font-semibold text-white disabled:opacity-55"
-          style={{ backgroundImage: "var(--brand-gradient)" }}
+          className="glass-shine h-10 rounded-full px-5 text-[12.5px] font-semibold text-white disabled:opacity-55"
+          style={glassShineStyle("var(--brand)")}
         >
           Save Checklist
         </button>
         <button
           type="button"
           onClick={closeChecklistEditor}
-          className="h-10 rounded-[10px] border px-4 text-[12px] font-semibold transition hover:brightness-95"
-          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+          className="glass-shine glass-shine-neutral h-10 rounded-full px-5 text-[12.5px] font-medium transition hover:brightness-95"
+          style={{ color: "var(--text-main)" }}
         >
           Cancel
         </button>
@@ -1287,100 +1163,286 @@ export default function UserSettingsPage() {
       />
     </div>
   );
-  // The page's bar. On a phone it's fixed under the app's tab bar, so it stays put while the pages slide
-  // beneath it (they start below it, at 92px); its button saves and leaves User Settings from any of them.
-  // Nothing scrolls under it there, so it's simply the page's own grey — the same as the top tab bar above
-  // it, as one surface (data-title-bar: the page scrollbar starts below it).
-  const headerBar = (
-  <div
-    data-title-bar={isPhone ? "true" : undefined}
-    className={
-      isPhone
-        ? "fixed inset-x-0 top-12 z-[31] flex h-[44px] items-center justify-between px-4"
-        : "glass-page-header -mx-4 -mt-3 flex h-[44px] shrink-0 items-center justify-between px-4 md:-mx-5 md:-mt-4 md:h-[56px] md:px-5"
-    }
-    style={isPhone ? { backgroundColor: "var(--bg-app)" } : undefined}
-  >
-    <div className="flex min-w-0 items-center gap-5">
-      <div className="flex min-w-0 items-center gap-2">
-        <UserCog size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
-        <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-          User Settings
-        </p>
-        <span className="text-[14px] font-medium" style={{ color: "var(--text-muted)" }}>|</span>
-        <p className="truncate text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
-          {activeDisplayName}
-        </p>
+  // The page's title (and how saving's going) and its Back — on a computer its own bar; on a phone the top row of its bar.
+  const headerTitleRow = (
+    <>
+      <div className="flex min-w-0 items-center gap-5">
+        <div className="flex min-w-0 items-center gap-2">
+          <UserCog size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
+          <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+            User Settings
+          </p>
+          <span className="text-[14px] font-medium" style={{ color: "var(--text-muted)" }}>|</span>
+          <p className="truncate text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
+            {activeDisplayName}
+          </p>
+        </div>
+        {/* Only shown for an active/meaningful state (saving, unsaved changes, or a transient
+            save-result message) — hidden at rest instead of sitting there permanently reading
+            "Saved", which carried no real information once nothing was happening. */}
+        {saveStatusPill}
       </div>
-      {/* Only shown for an active/meaningful state (saving, unsaved changes, or a transient
-          save-result message) — hidden at rest instead of sitting there permanently reading
-          "Saved", which carried no real information once nothing was happening. */}
-      {saveStatusPill}
-    </div>
-    {isCompactUserSettingsViewport ? (
-      <button
-        type="button"
-        disabled={isSaving}
-        onClick={async () => {
-          await saveProfile("manual");
-          router.push("/dashboard");
-        }}
-        // (Round and green in the glass shine, as every other top bar's back button.)
-        className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border hover:brightness-95 disabled:opacity-55"
-        style={glassShineStyle("#16A34A")}
-        aria-label={isSaving ? "Saving..." : "Save & Back"}
-      >
-        <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
-      </button>
-    ) : (
-      <button
-        type="button"
-        disabled={isSaving}
-        onClick={async () => {
-          await saveProfile("manual");
-          router.push("/dashboard");
-        }}
-        className="inline-flex h-9 shrink-0 items-center rounded-[10px] border px-4 text-[12px] font-semibold transition hover:brightness-95 disabled:opacity-55"
-        style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-      >
-        {isSaving ? "Saving..." : "Save & Back"}
-      </button>
-    )}
-  </div>
-  );
-
-  // ---- Phone: each section's page — a title card (with Back to the sections list — the bar's own button
-  // leaves User Settings), then cards of rows.
-  const renderSectionTitle = (sectionId: string, help?: ReactNode) => {
-    const section = USER_SETTINGS_SECTIONS.find((item) => item.id === sectionId);
-    if (!section) return null;
-    const Icon = section.icon;
-    return (
-      <div className="flex items-center gap-3 rounded-[18px] border p-4" style={glassCardStyle}>
+      {isCompactUserSettingsViewport ? (
         <button
           type="button"
-          onClick={() => sectionSlide.close()}
-          className="glass-nav-arrow inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
-          aria-label="Back"
+          disabled={isSaving}
+          onClick={async () => {
+            await saveProfile("manual");
+            router.push("/dashboard");
+          }}
+          // (Round and green in the glass shine, as every other top bar's back button.)
+          className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border hover:brightness-95 disabled:opacity-55"
+          style={glassShineStyle("#16A34A")}
+          aria-label={isSaving ? "Saving..." : "Save & Back"}
         >
-          <ChevronLeft size={18} />
+          <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
         </button>
-        <div
-          className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
-          style={{ backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+      ) : (
+        <button
+          type="button"
+          disabled={isSaving}
+          onClick={async () => {
+            await saveProfile("manual");
+            router.push("/dashboard");
+          }}
+          className="glass-shine inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border px-4 text-[12px] font-semibold text-white transition hover:brightness-105 disabled:opacity-55"
+          style={glassShineStyle("#16A34A")}
         >
-          <Icon size={20} />
+          <ChevronLeft size={16} strokeWidth={2.5} />
+          {isSaving ? "Saving..." : "Save & Back"}
+        </button>
+      )}
+    </>
+  );
+  const headerBar = (
+    <div className="glass-page-header -mx-4 -mt-3 flex h-[44px] shrink-0 items-center justify-between px-4 md:-mx-5 md:-mt-4 md:h-[56px] md:px-5">
+      {headerTitleRow}
+    </div>
+  );
+
+  // Phone: the search across every setting, in the bar — the Dashboard's search box (round-ended, its icon inside at the
+  // left). Typed in from a section's page, back to the first page, where the results are.
+  const phoneSearchBox = (
+    <div className="relative">
+      <Search size={15} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
+      <input
+        value={settingsSearch}
+        onChange={(e) => {
+          setSettingsSearch(e.target.value);
+          if (checklistSlide.isOpen) checklistSlide.close();
+          if (sectionSlide.isOpen) sectionSlide.close();
+        }}
+        placeholder="Search settings"
+        aria-label="Search settings"
+        className="cs-own-fill h-10 w-full rounded-full border pl-10 pr-4 text-[12px] font-medium outline-none transition-colors focus:border-[var(--brand)]"
+        style={{
+          borderColor: "var(--glass-border)",
+          backgroundColor: "var(--panel-bg)",
+          color: "var(--text-main)",
+          ["--field-bg" as string]: "var(--panel-bg)",
+          ["--field-border" as string]: "var(--glass-border)",
+        }}
+      />
+    </div>
+  );
+  // Phone: the bar (with the top tab bar above it, one sheet of glass behind both once the page scrolls up under them, no
+  // line between them — the tab bar's own glass is off here, data-joins-top-bar) and the card under it.
+  const phoneBars = (
+    <>
+      <div
+        aria-hidden="true"
+        className="pointer-events-none fixed inset-x-0 top-0 z-[34]"
+        style={{
+          height: PHONE_BAR_BOTTOM_PX,
+          backgroundColor: "color-mix(in srgb, var(--bg-app) 40%, transparent)",
+          backdropFilter: "blur(12px) saturate(220%)",
+          WebkitBackdropFilter: "blur(12px) saturate(220%)",
+          boxShadow: "inset 0 -1px 0 var(--glass-border)",
+          opacity: phoneScrolledUnder ? 1 : 0,
+        }}
+      />
+      <div data-joins-top-bar="true" data-title-bar="true" className="fixed inset-x-0 z-[35] px-4" style={{ top: PHONE_TAB_BAR_PX }}>
+        <div className="flex items-center justify-between gap-3" style={{ height: PHONE_TITLE_ROW_PX }}>
+          {headerTitleRow}
         </div>
-        <div className="min-w-0">
-          <p className="truncate text-[20px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>{section.label}</p>
-          {help ? <p className="mt-0.5 text-[12px]" style={{ color: "var(--text-muted)" }}>{help}</p> : null}
+        <div style={{ height: PHONE_SEARCH_ROW_PX }}>{phoneSearchBox}</div>
+      </div>
+    </>
+  );
+
+  // Phone: the user's emblem colour — tap the badge, anywhere (the card, General's Badge Colour row).
+  const openBadgeStudio = (from: HTMLElement | null) => {
+    setBadgeStudioOrigin(from);
+    setIsBadgeStudioOpen(true);
+  };
+
+  // ---- Phone: the card under the bar, staying put: your badge (tap: big, with its colours), your name and email (tap the
+  // card: General) and Log out — or, inside a page (a section, a notification category, a checklist), its Back, icon and
+  // name in the same card, the same size. The Back stays put from one page to the next; just the title (its icon, name
+  // and anything of its own at the end) changes — the old one fading out as the new one fades in.
+  const renderPhoneCardContent = () => {
+    const iconTile = (icon: ReactNode) => (
+      <div
+        className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
+        style={{ backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+      >
+        {icon}
+      </div>
+    );
+    const section = sectionSlide.isOpen ? USER_SETTINGS_SECTIONS.find((item) => item.id === sectionSlide.openId) : undefined;
+    const category = section?.id === "notifications" ? notificationCategoryTitle : null;
+    let page: { key: string; back: () => void; backLabel: string; title: ReactNode } | null = null;
+    if (checklistSlide.isOpen && openChecklist) {
+      page = {
+        key: `checklist:${openChecklist.id}`,
+        back: () => checklistSlide.close(),
+        backLabel: "Back",
+        title: (
+          <div className="flex min-w-0 items-center gap-3">
+            {iconTile(<ClipboardList size={20} />)}
+            {isEditingChecklistName ? (
+              <input
+                autoFocus
+                aria-label="Checklist name"
+                value={checklistNameEditDraft}
+                onChange={(e) => setChecklistNameEditDraft(e.target.value)}
+                onBlur={() => commitChecklistName(openChecklist)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                }}
+                className="h-10 min-w-0 flex-1 bg-transparent px-0 text-[17px] font-semibold outline-none"
+                style={{ color: "var(--text-main)" }}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setChecklistNameEditDraft(openChecklist.name);
+                  setIsEditingChecklistName(true);
+                }}
+                className="min-w-0 flex-1 text-left"
+                aria-label={`Rename ${openChecklist.name}`}
+              >
+                <p className="truncate text-[19px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>{openChecklist.name}</p>
+                <p className="mt-0.5 text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>{itemCountLabel(openChecklist)}</p>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => requestDeleteChecklist(openChecklist, () => checklistSlide.close())}
+              className="inline-flex h-10 min-w-10 shrink-0 items-center justify-center gap-1 rounded-full px-2 transition active:bg-[var(--danger-soft)]"
+              style={{
+                color: "var(--danger-strong)",
+                backgroundColor: confirmDeleteChecklistId === openChecklist.id ? "var(--danger-soft)" : undefined,
+              }}
+              aria-label={confirmDeleteChecklistId === openChecklist.id ? `Tap again to delete ${openChecklist.name}` : `Delete ${openChecklist.name}`}
+            >
+              <Trash2 size={17} />
+              {confirmDeleteChecklistId === openChecklist.id ? <span className="text-[12px] font-semibold">Delete?</span> : null}
+            </button>
+          </div>
+        ),
+      };
+    } else if (category) {
+      const CategoryIcon = category.icon;
+      page = {
+        key: `notification-category:${category.id}`,
+        back: category.back,
+        backLabel: category.backLabel,
+        title: (
+          <div className="flex min-w-0 items-center gap-3">
+            {iconTile(<CategoryIcon size={20} />)}
+            <p className="min-w-0 flex-1 truncate text-[19px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>{category.label}</p>
+            <SettingsToggleSwitch checked={category.on} onChange={category.toggle} />
+          </div>
+        ),
+      };
+    } else if (section) {
+      const Icon = section.icon;
+      page = {
+        key: `section:${section.id}`,
+        back: () => sectionSlide.close(),
+        backLabel: "Back",
+        title: (
+          <div className="flex min-w-0 items-center gap-3">
+            {iconTile(<Icon size={20} />)}
+            <div className="min-w-0">
+              <p className="truncate text-[19px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>{section.label}</p>
+              {section.id === "checklists" ? (
+                <p className="mt-0.5 truncate text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>{checklistsHelp}</p>
+              ) : null}
+            </div>
+          </div>
+        ),
+      };
+    }
+    if (page) {
+      return (
+        <div key="page" className="sidebar-label-fade-in flex h-full items-center gap-3">
+          <button
+            type="button"
+            onClick={page.back}
+            className="glass-nav-arrow inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
+            aria-label={page.backLabel}
+          >
+            <ChevronLeft size={19} />
+          </button>
+          <CardTitleCrossfade swapKey={page.key}>{page.title}</CardTitleCrossfade>
         </div>
+      );
+    }
+    return (
+      <div
+        key="profile"
+        role="button"
+        tabIndex={0}
+        onClick={() => openSection("general")}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") openSection("general");
+        }}
+        className="sidebar-label-fade-in flex h-full cursor-pointer items-center gap-3.5"
+        aria-label="Open General"
+      >
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            openBadgeStudio(e.currentTarget);
+          }}
+          className="inline-flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-[19px] font-extrabold text-white transition active:scale-95"
+          style={{ backgroundColor: effectiveColor }}
+          aria-label="Badge colour"
+        >
+          {profileInitials}
+        </button>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[17px] font-semibold" style={{ color: "var(--text-main)" }}>{activeDisplayName}</p>
+          <p className="truncate text-[12.5px] font-medium" style={{ color: "var(--text-muted)" }}>{user?.email || ""}</p>
+        </div>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            requestLogout(e.currentTarget);
+          }}
+          className="glass-shine glass-shine-neutral inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
+          // (No shadow behind it in the card — just its top highlight.)
+          style={{ color: "var(--danger-strong)", boxShadow: "inset 0 1px 0 var(--glass-highlight)" }}
+          aria-label="Log out"
+          title="Log out"
+        >
+          <LogOut size={17} />
+        </button>
       </div>
     );
   };
+  const phoneCard = (
+    <div className="fixed inset-x-4 z-[31] rounded-[18px] border px-4" style={{ ...glassCardStyle, top: PHONE_CARD_TOP_PX, height: PHONE_CARD_HEIGHT_PX }}>
+      {renderPhoneCardContent()}
+    </div>
+  );
   const phoneValueClass = "max-w-[55%] truncate text-[13px]";
   const phoneInputStyle = { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" } as const;
-  const phoneSaveButtonStyle = { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" } as const;
   // Name / Mobile, editable in place (16px text, so a phone doesn't zoom in on it).
   const renderPhoneEditRow = (icon: LucideIcon, label: string, value: string, draft: { editing: boolean; value: string; set: (next: string) => void; start: () => void; commit: () => void }) => {
     const Icon = icon;
@@ -1396,18 +1458,18 @@ export default function UserSettingsPage() {
           onKeyDown={(e) => {
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
           }}
-          className="h-9 min-w-0 flex-1 rounded-[8px] border px-2 text-[16px] outline-none"
-          style={phoneInputStyle}
+          className="h-9 min-w-0 flex-1 bg-transparent px-0 text-[16px] font-medium outline-none"
+          style={{ color: "var(--text-main)" }}
         />
         <button
           type="button"
           onMouseDown={(e) => e.preventDefault()}
           onClick={draft.commit}
-          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border"
-          style={phoneSaveButtonStyle}
+          className="glass-shine inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white"
+          style={glassShineStyle("#16A34A")}
           aria-label={`Save ${label.toLowerCase()}`}
         >
-          <Check size={16} />
+          <Check size={17} strokeWidth={2.75} />
         </button>
       </div>
     ) : (
@@ -1423,11 +1485,7 @@ export default function UserSettingsPage() {
         <MobileSettingsRow
           icon={Palette}
           label="Badge Colour"
-          onClick={() => {
-            const rect = phoneColorSwatchRef.current?.getBoundingClientRect();
-            if (rect) setColorPopoverAnchor({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
-            setIsColorPopoverOpen(true);
-          }}
+          onClick={(e) => openBadgeStudio(phoneColorSwatchRef.current ?? e.currentTarget)}
         >
           <span
             ref={phoneColorSwatchRef}
@@ -1496,7 +1554,7 @@ export default function UserSettingsPage() {
       {preferenceRows
         .filter((row) => row.phone)
         .map((row) => (
-          <MobileSettingsRow key={row.id} icon={row.icon} label={row.label} detail={row.description}>
+          <MobileSettingsRow key={row.id} icon={row.icon} label={row.label} help={row.description} onHelp={help.show}>
             {row.control ?? <SettingsToggleSwitch checked={row.checked} onChange={row.onChange} />}
           </MobileSettingsRow>
         ))}
@@ -1589,67 +1647,11 @@ export default function UserSettingsPage() {
       <MobileSettingsRow icon={Plus} label="Create Checklist" accent onClick={openNewChecklistEditor} />
     </div>
   );
-  // A checklist's page: a title card (Back to Checklists, its name — tap to rename — and item count, and
-  // Delete on the right — a second tap confirms it if it has items), then its items, always editable.
+  // A checklist's page: its items, always editable. (Its title — Back to Checklists, its name, tap to rename, its item
+  // count and Delete, a second tap confirming it if it has items — is in the card at the top: renderPhoneCardContent.)
   const openChecklist = checklistTemplates.find((template) => template.id === checklistSlide.openId) ?? null;
   const checklistPage = openChecklist ? (
     <div className="space-y-4">
-      <div className="flex items-center gap-3 rounded-[18px] border p-4" style={glassCardStyle}>
-        <button
-          type="button"
-          onClick={() => checklistSlide.close()}
-          className="glass-nav-arrow inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
-          aria-label="Back"
-        >
-          <ChevronLeft size={18} />
-        </button>
-        <div
-          className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
-          style={{ backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-        >
-          <ClipboardList size={20} />
-        </div>
-        {isEditingChecklistName ? (
-          <input
-            autoFocus
-            aria-label="Checklist name"
-            value={checklistNameEditDraft}
-            onChange={(e) => setChecklistNameEditDraft(e.target.value)}
-            onBlur={() => commitChecklistName(openChecklist)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-            }}
-            className="h-10 min-w-0 flex-1 rounded-[8px] border px-2 text-[17px] font-semibold outline-none"
-            style={phoneInputStyle}
-          />
-        ) : (
-          <button
-            type="button"
-            onClick={() => {
-              setChecklistNameEditDraft(openChecklist.name);
-              setIsEditingChecklistName(true);
-            }}
-            className="min-w-0 flex-1 text-left"
-            aria-label={`Rename ${openChecklist.name}`}
-          >
-            <p className="truncate text-[20px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>{openChecklist.name}</p>
-            <p className="mt-0.5 text-[12px]" style={{ color: "var(--text-muted)" }}>{itemCountLabel(openChecklist)}</p>
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => requestDeleteChecklist(openChecklist, () => checklistSlide.close())}
-          className="inline-flex h-9 min-w-9 shrink-0 items-center justify-center gap-1 rounded-[10px] px-2 transition active:bg-[var(--danger-soft)]"
-          style={{
-            color: "var(--danger-strong)",
-            backgroundColor: confirmDeleteChecklistId === openChecklist.id ? "var(--danger-soft)" : undefined,
-          }}
-          aria-label={confirmDeleteChecklistId === openChecklist.id ? `Tap again to delete ${openChecklist.name}` : `Delete ${openChecklist.name}`}
-        >
-          <Trash2 size={16} />
-          {confirmDeleteChecklistId === openChecklist.id ? <span className="text-[12px] font-semibold">Delete?</span> : null}
-        </button>
-      </div>
       <div className={MOBILE_ROWS_CARD_CLASS} style={glassCardStyle}>
         {openChecklist.items.map((item, index) => (
           <div key={item.id || index} className={MOBILE_ROW_CLASS}>
@@ -1772,14 +1774,188 @@ export default function UserSettingsPage() {
       )
     : [];
 
+  // ---- A computer: down the left, a profile card (your badge — click it for the big one, with its colours — your name,
+  // email and role, Edit profile and Log out) and the sections, with the search at their top; on the right, the section
+  // picked: its header (icon, name, what it's for) and its settings. The same rows as a phone's, with room for the words.
+  const renderDesktopSettings = () => {
+    const section = USER_SETTINGS_SECTIONS.find((item) => item.id === desktopSection) ?? USER_SETTINGS_SECTIONS[0];
+    const SectionIcon = section.icon;
+    const roleLabel = companyRoleLabel || user?.role || "";
+    const pick = (sectionId: string) => {
+      setSettingsSearch("");
+      setDesktopSection(sectionId);
+    };
+    return (
+      <div className="grid gap-5 lg:grid-cols-[300px_minmax(0,1fr)]">
+        <aside className="grid content-start gap-4 sm:grid-cols-2 lg:sticky lg:top-[72px] lg:grid-cols-1 lg:self-start">
+          <div className="rounded-[18px] border p-5 text-center" style={glassCardStyle}>
+            <button
+              type="button"
+              onClick={(e) => openBadgeStudio(e.currentTarget)}
+              className="mx-auto inline-flex h-24 w-24 items-center justify-center rounded-full text-[30px] font-extrabold text-white transition hover:scale-[1.03]"
+              style={{ backgroundColor: effectiveColor, boxShadow: "var(--shadow-glass)" }}
+              aria-label="Badge colour"
+              title="Change your badge colour"
+            >
+              {profileInitials}
+            </button>
+            <p className="mt-3 truncate text-[18px] font-semibold" style={{ color: "var(--text-main)" }}>{activeDisplayName}</p>
+            <p className="truncate text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>{user?.email || ""}</p>
+            {roleLabel ? (
+              <span
+                className="mt-2 inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium"
+                style={{ backgroundColor: companyRoleColor || "#7D99B3", color: contrastTextForFill(companyRoleColor || "#7D99B3") }}
+              >
+                {roleLabel}
+              </span>
+            ) : null}
+            <div className="mt-4 flex justify-center gap-2">
+              <button
+                type="button"
+                onClick={() => pick("general")}
+                className="glass-shine glass-shine-neutral inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-[12.5px] font-medium transition hover:brightness-95"
+                style={{ color: "var(--text-main)" }}
+              >
+                <Pencil size={13} />
+                Edit profile
+              </button>
+              <button
+                type="button"
+                onClick={(e) => requestLogout(e.currentTarget)}
+                className="glass-shine glass-shine-neutral inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-[12.5px] font-medium transition hover:brightness-95"
+                style={{ color: "var(--danger-strong)" }}
+              >
+                <LogOut size={13} />
+                Log out
+              </button>
+            </div>
+          </div>
+          <div className="rounded-[18px] border p-3" style={glassCardStyle}>
+            <div className="relative mb-2">
+              <Search size={14} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
+              <input
+                value={settingsSearch}
+                onChange={(e) => setSettingsSearch(e.target.value)}
+                placeholder="Search settings"
+                aria-label="Search settings"
+                className="cs-own-fill h-9 w-full rounded-full border pl-9 pr-3.5 text-[12px] font-medium outline-none transition-colors focus:border-[var(--brand)]"
+                style={{
+                  borderColor: "var(--glass-border)",
+                  backgroundColor: "var(--panel-bg)",
+                  color: "var(--text-main)",
+                  ["--field-bg" as string]: "var(--panel-bg)",
+                  ["--field-border" as string]: "var(--glass-border)",
+                }}
+              />
+            </div>
+            <nav className="space-y-0.5">
+              {USER_SETTINGS_SECTIONS.map((item) => {
+                const Icon = item.icon;
+                const active = !settingsQuery && item.id === section.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => pick(item.id)}
+                    aria-current={active ? "page" : undefined}
+                    className={`flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-[13.5px] font-medium transition ${
+                      active ? "nav-active-glass" : "hover:bg-[var(--panel-muted)]"
+                    }`}
+                    style={{ color: active ? "var(--brand)" : "var(--text-main)" }}
+                  >
+                    <Icon size={17} className="shrink-0" />
+                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                    <ChevronRight size={15} className="shrink-0" style={{ color: active ? "var(--brand)" : "var(--text-muted)" }} />
+                  </button>
+                );
+              })}
+            </nav>
+          </div>
+        </aside>
+
+        <section className="min-w-0 space-y-4">
+          {settingsQuery ? (
+            <>
+              <div className="flex items-center gap-3.5 rounded-[18px] border px-5 py-4" style={glassCardStyle}>
+                <div className="glass-shine inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white" style={glassShineStyle("var(--brand)")}>
+                  <Search size={19} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[18px] font-semibold" style={{ color: "var(--text-main)" }}>Search</p>
+                  <p className="truncate text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>
+                    {settingsResults.length ? `${settingsResults.length} setting${settingsResults.length === 1 ? "" : "s"} matching \u201c${settingsSearch.trim()}\u201d` : "No settings match that"}
+                  </p>
+                </div>
+              </div>
+              {settingsResults.length ? (
+                <div className={MOBILE_ROWS_CARD_CLASS} style={glassCardStyle}>
+                  {settingsResults.map((item) => (
+                    <MobileSettingsRow
+                      key={item.key}
+                      icon={item.icon}
+                      label={item.label}
+                      detail={item.detail ?? sectionLabelOf(item.section)}
+                      onClick={() => {
+                        item.onOpen?.();
+                        if (item.notificationsQuery) setNotificationsSearch(item.notificationsQuery);
+                        pick(item.section);
+                      }}
+                    >
+                      <ChevronRight size={16} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+                    </MobileSettingsRow>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-[18px] border" style={glassCardStyle}>
+                  <EmptyState compact icon={<Search size={16} />} title="No matches" hint="Try a different search" />
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-3.5 rounded-[18px] border px-5 py-4" style={glassCardStyle}>
+                <div className="glass-shine inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white" style={glassShineStyle("var(--brand)")}>
+                  <SectionIcon size={20} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[18px] font-semibold" style={{ color: "var(--text-main)" }}>{section.label}</p>
+                  <p className="truncate text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>{section.description}</p>
+                </div>
+                {section.id === "checklists" && !isChecklistEditorOpen && checklistTemplates.length ? createChecklistButton : null}
+              </div>
+              {section.id === "general" ? (
+                <div className="space-y-4">{phoneGeneral}</div>
+              ) : section.id === "preferences" ? (
+                desktopPreferences
+              ) : section.id === "notifications" ? (
+                <PushNotificationSettings
+                  key={`notifications:${notificationsSearch}`}
+                  uid={String(user?.uid || "")}
+                  cardStyle={glassCardStyle}
+                  Toggle={SettingsToggleSwitch}
+                  pageRef={settingsPageRef}
+                  initialSearch={notificationsSearch}
+                />
+              ) : (
+                <div className="rounded-[18px] border p-5" style={glassCardStyle}>
+                  {checklistsContent}
+                </div>
+              )}
+            </>
+          )}
+        </section>
+      </div>
+    );
+  };
+
   const downloadApp = (
     <div>
       {pwaCanInstall ? (
         <button
           type="button"
           onClick={() => void onClickDownloadApp()}
-          className="flex h-11 w-full items-center justify-center gap-1.5 rounded-[12px] border text-[13px] font-semibold text-white transition hover:brightness-95"
-          style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+          className="glass-shine flex h-11 w-full items-center justify-center gap-1.5 rounded-full text-[13px] font-semibold text-white transition hover:brightness-105"
+          style={glassShineStyle("var(--brand)")}
         >
           <Download size={15} />
           Download App
@@ -1792,8 +1968,8 @@ export default function UserSettingsPage() {
             setPwaHelpOrigin(captureGlassModalOrigin(e));
             setIsPwaHelpOpen(true);
           }}
-          className="flex h-11 w-full items-center justify-center gap-1.5 rounded-[12px] border text-[13px] font-semibold text-white transition hover:brightness-95"
-          style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+          className="glass-shine flex h-11 w-full items-center justify-center gap-1.5 rounded-full text-[13px] font-semibold text-white transition hover:brightness-105"
+          style={glassShineStyle("var(--brand)")}
         >
           <HelpCircle size={15} />
           Help — Save as App
@@ -1809,9 +1985,9 @@ export default function UserSettingsPage() {
     <div ref={settingsPageRef} className="space-y-4">
       {isPhone ? (
         <>
-          {/* Holds the bar's place — the bar itself is fixed (below). */}
-          <div aria-hidden className="-mx-4 -mt-3 h-[44px]" />
-          {typeof document !== "undefined" ? createPortal(headerBar, document.body) : null}
+          {/* Where the page's content starts — under the bar and the card, which are fixed (below). */}
+          <div aria-hidden style={{ height: PHONE_CONTENT_TOP_PX - PHONE_MAIN_TOP_PX - 16 }} />
+          {typeof document !== "undefined" ? createPortal(<>{phoneBars}{phoneCard}</>, document.body) : null}
         </>
       ) : (
         headerBar
@@ -1820,33 +1996,6 @@ export default function UserSettingsPage() {
       {isPhone ? (
         // Phone: a profile card, then the sections — each slides in as its own page (below).
         <>
-          <div className="flex items-center gap-3.5 rounded-[18px] border p-4" style={glassCardStyle}>
-            <div
-              className="inline-flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-[19px] font-extrabold text-white"
-              style={{ backgroundColor: effectiveColor }}
-            >
-              {profileInitials}
-            </div>
-            <div className="min-w-0">
-              <p className="truncate text-[17px] font-semibold" style={{ color: "var(--text-main)" }}>{activeDisplayName}</p>
-              <p className="truncate text-[12.5px]" style={{ color: "var(--text-muted)" }}>{user?.email || ""}</p>
-            </div>
-          </div>
-          <label className="flex h-10 items-center gap-2 rounded-[12px] border px-3" style={glassCardStyle}>
-            <Search size={14} className="shrink-0" style={{ color: "var(--text-muted)" }} />
-            <input
-              value={settingsSearch}
-              onChange={(e) => setSettingsSearch(e.target.value)}
-              placeholder="Search settings"
-              className="h-8 w-full min-w-0 bg-transparent text-[13px] outline-none"
-              style={{ color: "var(--text-main)" }}
-            />
-            {settingsSearch ? (
-              <button type="button" onClick={() => setSettingsSearch("")} aria-label="Clear search" className="shrink-0" style={{ color: "var(--text-muted)" }}>
-                <X size={14} />
-              </button>
-            ) : null}
-          </label>
           {settingsQuery ? (
             settingsResults.length ? (
               <div className={MOBILE_ROWS_CARD_CLASS} style={glassCardStyle}>
@@ -1882,46 +2031,9 @@ export default function UserSettingsPage() {
         </>
       ) : (
         <>
-          {/* Mobile only — lets someone install the app straight from a button press instead of
-              visiting the site and manually bookmarking it. Just the button, full width to match the
-              containers below rather than living inside its own card. Hidden entirely once already
-              installed. When there's no native install prompt available (iOS always, or Android/
-              Chrome before it decides the site is install-eligible), shows a Help button that opens
-              manual instructions instead of a dead/no-op button. On a phone it sits below the sections list. */}
+          {/* A tablet: the Download App / Save as App button (just the button, full width), until it's installed. */}
           {isCompactUserSettingsViewport && !pwaIsInstalled ? downloadApp : null}
-
-          <div className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
-            <aside className="rounded-[18px] border p-5" style={glassCardStyle}>
-              {generalContent}
-            </aside>
-
-            <div className="space-y-5">
-              <div className="rounded-[18px] border p-5" style={glassCardStyle}>
-                <h3 className="mb-4 text-[15px] font-extrabold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                  Preferences
-                </h3>
-                {preferencesContent}
-              </div>
-
-              <PushNotificationSettings uid={String(user?.uid || "")} cardStyle={glassCardStyle} Toggle={SettingsToggleSwitch} pageRef={settingsPageRef} />
-
-              <div className="rounded-[18px] border p-5" style={glassCardStyle}>
-                <div className="mb-5 flex items-start justify-between gap-3">
-                  <div>
-                    <h3 className="text-[15px] font-extrabold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                      Checklists
-                    </h3>
-                    <p className="mt-1 text-[12px]" style={{ color: "var(--text-muted)" }}>
-                      {checklistsHelp}
-                    </p>
-                  </div>
-                  {!isChecklistEditorOpen && createChecklistButton}
-                </div>
-
-                {checklistsContent}
-              </div>
-            </div>
-          </div>
+          {renderDesktopSettings()}
         </>
       )}
 
@@ -1984,9 +2096,8 @@ export default function UserSettingsPage() {
 
       {/* Phone: the open section's own page, sliding in over this one under the bar above. Notifications'
           categories slide in over it in turn (its pageRef is this page). */}
-      <SlideOverPane {...sectionSlide} topClass="top-[92px]">
+      <SlideOverPane {...sectionSlide} topClass="top-0" contentTopPx={PHONE_CONTENT_TOP_PX}>
         <div className="space-y-4">
-          {renderSectionTitle(sectionSlide.openId, sectionSlide.openId === "checklists" ? checklistsHelp : undefined)}
           {sectionSlide.openId === "general" ? (
             phoneGeneral
           ) : sectionSlide.openId === "preferences" ? (
@@ -1999,30 +2110,34 @@ export default function UserSettingsPage() {
               pageRef={sectionSlide.paneRef}
               layout="rows"
               initialSearch={notificationsSearch}
+              rowsPageTopPx={PHONE_CARD_TOP_PX}
+              rowsTitleCardHeightPx={PHONE_CARD_HEIGHT_PX}
+              rowsTitleInCard
+              onRowsCategoryChange={setNotificationCategoryTitle}
+              onHelp={help.show}
             />
           ) : sectionSlide.openId === "checklists" ? (
             phoneChecklists
           ) : null}
         </div>
       </SlideOverPane>
-      <SlideOverPane {...checklistSlide} topClass="top-[92px]" zIndexClass="z-[30]">
+      <SlideOverPane {...checklistSlide} topClass="top-0" zIndexClass="z-[30]" contentTopPx={PHONE_CONTENT_TOP_PX}>
         {checklistPage}
       </SlideOverPane>
 
-      <SidebarColorPickerPopover
-        isOpen={isColorPopoverOpen}
-        anchorRect={colorPopoverAnchor}
-        currentColor={effectiveColor}
+      <BadgeColorStudio
+        open={isBadgeStudioOpen}
+        originEl={badgeStudioOrigin}
+        color={effectiveColor}
+        initials={profileInitials}
         onSelect={(hex) => {
           setUserColor(hex);
           queueAutoSave();
         }}
-        onUseCompanyDefault={() => {
-          void applyCompanyDefault();
-          setIsColorPopoverOpen(false);
-        }}
-        onClose={() => setIsColorPopoverOpen(false)}
+        onUseCompanyDefault={() => void applyCompanyDefault()}
+        onClose={() => setIsBadgeStudioOpen(false)}
       />
+      {help.bubble}
     </div>
   );
 }

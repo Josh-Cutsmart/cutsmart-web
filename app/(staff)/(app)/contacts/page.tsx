@@ -23,7 +23,7 @@ import {
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { AlertTriangle, Archive, Check, ChevronLeft, History, Mail, MapPin, MessageSquare, Pencil, Phone, Plus, Search, Share, Users, X } from "lucide-react";
+import { AlertTriangle, Archive, Check, ChevronLeft, History, Mail, MapPin, MessageSquare, Pencil, Phone, Plus, Search, Share, Users } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { authorizedFetch } from "@/lib/api-fetch";
 import {
@@ -201,6 +201,8 @@ function ClientsPageInner() {
   // the category filter + add button) and expands into the real input on tap; the category filter
   // slides away while it's open to make room, then slides back when search closes.
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
+  // Open while it's in use or has something in it (shrinking back once it's left empty).
+  const isMobileSearchShown = isMobileSearchOpen || Boolean(search.trim());
   const mobileSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [clients, setClients] = useState<CompanyClientRow[]>([]);
   const [clientDetailsById, setClientDetailsById] = useState<Record<string, CompanyClientRow>>({});
@@ -1412,7 +1414,7 @@ function ClientsPageInner() {
                 </button>
                 {contactCategories.length > 0 ? (
                   <div
-                    className={`overflow-hidden transition-all duration-200 ${isMobileSearchOpen ? "max-w-0 opacity-0" : "max-w-[140px] opacity-100"}`}
+                    className={`overflow-hidden transition-all duration-200 ${isMobileSearchShown ? "max-w-0 opacity-0" : "max-w-[140px] opacity-100"}`}
                   >
                     <GlassDropdown
                       value={categoryFilter}
@@ -1427,44 +1429,36 @@ function ClientsPageInner() {
                   </div>
                 ) : null}
                 <div
-                  className={`flex h-9 min-w-0 items-center overflow-hidden rounded-full border transition-all duration-200 focus-within:border-[var(--brand)] ${isMobileSearchOpen ? "max-w-[500px] flex-1 justify-start gap-2 pl-0 pr-3" : "w-9 max-w-9 shrink-0 justify-center gap-0 px-0"}`}
+                  className={`flex h-9 min-w-0 items-center overflow-hidden rounded-full border transition-all duration-200 focus-within:border-[var(--brand)] ${isMobileSearchShown ? "max-w-[500px] flex-1 justify-start gap-2 pl-0 pr-3" : "w-9 max-w-9 shrink-0 justify-center gap-0 px-0"}`}
                   style={{ borderColor: border, backgroundColor: panelBg }}
                 >
                   <button
                     type="button"
                     onClick={() => {
-                      if (isMobileSearchOpen) return;
+                      // In the tap itself, so a phone brings up its keyboard.
                       setIsMobileSearchOpen(true);
-                      window.setTimeout(() => mobileSearchInputRef.current?.focus(), 0);
+                      mobileSearchInputRef.current?.focus({ preventScroll: true });
                     }}
                     className="inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center"
                     aria-label="Search contacts"
+                    tabIndex={isMobileSearchShown ? -1 : 0}
                   >
                     <Search size={14} style={{ color: textSoft }} />
                   </button>
-                  {isMobileSearchOpen ? (
-                    <>
-                      <input
-                        ref={mobileSearchInputRef}
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                        placeholder="Search contacts..."
-                        className="h-8 w-full min-w-0 bg-transparent text-[12px] font-semibold outline-none"
-                        style={{ color: text }}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSearch("");
-                          setIsMobileSearchOpen(false);
-                        }}
-                        className="shrink-0"
-                        aria-label="Close search"
-                      >
-                        <X size={14} style={{ color: textSoft }} />
-                      </button>
-                    </>
-                  ) : null}
+                  {/* Always there (no width while it's shut), so the tap above can put the cursor straight in it. */}
+                  <input
+                    ref={mobileSearchInputRef}
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    onFocus={() => setIsMobileSearchOpen(true)}
+                    onBlur={() => {
+                      if (!search.trim()) setIsMobileSearchOpen(false);
+                    }}
+                    placeholder="Search contacts..."
+                    tabIndex={isMobileSearchShown ? 0 : -1}
+                    className={`h-8 min-w-0 bg-transparent text-[12px] font-semibold outline-none ${isMobileSearchShown ? "w-full" : "w-0"}`}
+                    style={{ color: text }}
+                  />
                 </div>
               </div>
               {/* Column header row — desktop/tablet only; mobile shows just the name per row so a

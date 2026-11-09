@@ -1,5 +1,7 @@
 "use client";
 
+import { useSyncExternalStore } from "react";
+
 export type ThemeMode = "light" | "dark";
 
 export const THEME_MODE_STORAGE_KEY = "cutsmart_theme_mode";
@@ -32,4 +34,22 @@ export function saveThemeMode(mode: ThemeMode) {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent<{ mode: ThemeMode }>(THEME_MODE_UPDATED_EVENT, { detail: { mode: next } }));
   }
+}
+
+function subscribeThemeMode(onChange: () => void) {
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === THEME_MODE_STORAGE_KEY) onChange();
+  };
+  window.addEventListener(THEME_MODE_UPDATED_EVENT, onChange);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener(THEME_MODE_UPDATED_EVENT, onChange);
+    window.removeEventListener("storage", onStorage);
+  };
+}
+
+// Light or dark as it is now — changing with it, wherever it's changed (User Settings, the sidebar's slide-up card,
+// another tab). Light until the page is in the browser (so the server's render matches).
+export function useThemeMode(): ThemeMode {
+  return useSyncExternalStore(subscribeThemeMode, readThemeMode, () => "light");
 }

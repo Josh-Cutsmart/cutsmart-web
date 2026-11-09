@@ -2,12 +2,14 @@
 
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
   type ComponentType,
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
   type RefObject,
   type TouchEvent as ReactTouchEvent,
 } from "react";
@@ -364,6 +366,18 @@ const ROWS_CARD_CLASS = "divide-y divide-[var(--glass-border)] overflow-hidden r
 const ROWS_PAGE_TOP_CLASS = "top-[92px]";
 
 // The categories' icons in the phone layout's rows (and User Settings' search).
+// An open category's title, for a page that shows it in its own card (rowsTitleInCard).
+export type RowsCategoryTitle = {
+  id: string;
+  label: string;
+  icon: LucideIcon;
+  backLabel: string;
+  // The whole category's switch.
+  on: boolean;
+  back: () => void;
+  toggle: (next: boolean) => void;
+};
+
 export const PUSH_CATEGORY_ICONS: Record<string, LucideIcon> = {
   projects: FolderKanban,
   leads: Inbox,
@@ -380,6 +394,11 @@ export function PushNotificationSettings({
   pageRef,
   layout = "card",
   initialSearch = "",
+  rowsPageTopPx,
+  rowsTitleCardHeightPx,
+  rowsTitleInCard = false,
+  onRowsCategoryChange,
+  onHelp,
 }: {
   uid: string;
   cardStyle: CSSProperties;
@@ -391,6 +410,17 @@ export function PushNotificationSettings({
   layout?: "card" | "rows";
   // Opens already searched for this (e.g. a notification picked in User Settings' search).
   initialSearch?: string;
+  // Rows layout, under bars that stay put at the top (User Settings on a phone): a category's page starts at the very top
+  // of the screen, its content scrolling on up under them, and its title card held this far down — where User Settings'
+  // own card is, the same height — so it takes that card's place as it slides in.
+  rowsPageTopPx?: number;
+  rowsTitleCardHeightPx?: number;
+  // Rows layout: the page shows an open category's title in its own card (User Settings' on a phone — its Back staying
+  // put, only the title changing), so it has none of its own here: it's told which category's open (null when none).
+  rowsTitleInCard?: boolean;
+  onRowsCategoryChange?: (title: RowsCategoryTitle | null) => void;
+  // Rows layout: a notification's description shown on a tap of its name (User Settings' help bubble), not under it.
+  onHelp?: (text: ReactNode, from: HTMLElement) => void;
 }) {
   const [status, setStatus] = useState<PushDeviceStatus | "loading">(() => lastDeviceStatus ?? "loading");
   const [busy, setBusy] = useState(false);
@@ -763,8 +793,21 @@ export function PushNotificationSettings({
               {categoryLabel ? (
                 <p className="text-[10.5px] font-bold uppercase tracking-[0.6px]" style={subText}>{categoryLabel}</p>
               ) : null}
-              <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{option.label}</p>
-              <p className="text-[11px]" style={subText}>{option.description}</p>
+              {onHelp && layout === "rows" ? (
+                <button
+                  type="button"
+                  onClick={(event) => onHelp(option.description, event.currentTarget)}
+                  className="block max-w-full text-left text-[14px] font-medium"
+                  style={{ color: "var(--text-main)" }}
+                >
+                  {option.label}
+                </button>
+              ) : (
+                <>
+                  <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{option.label}</p>
+                  <p className="text-[11px]" style={subText}>{option.description}</p>
+                </>
+              )}
             </div>
             <div className="flex shrink-0 items-center gap-2.5">
               {devModeOn ? <DevTestButton sample={option.type} /> : null}
@@ -871,6 +914,38 @@ export function PushNotificationSettings({
     const categoryOn = isPushNotificationCategoryEnabled(categoryChoices, category.id);
     return <div className="space-y-4">{category.types.map((option) => renderTypeRow(option, categoryOn))}</div>;
   };
+  // The open category, for the page's own card (rowsTitleInCard): its name and icon, its switch, and where Back goes
+  // (Calendar's list, from one of Calendar's categories). Told when any of that changes — its Back and switch go through
+  // here as they are at the time, so they're always this render's.
+  const categoryInCard = Boolean(rowsTitleInCard && isPhone && layout === "rows" && isCategoryOpen && openCategory);
+  const cardCategoryOn = openCategory ? isPushNotificationCategoryEnabled(categoryChoices, openCategory.id) : false;
+  const cardOnCalendarPage = Boolean(openCategory?.id === "calendar" && calendarCategoryPage);
+  const cardActionsRef = useRef({ back: () => {}, toggle: (next: boolean) => void next });
+  cardActionsRef.current = {
+    back: cardOnCalendarPage ? closeCalendarCategoryPage : closeCategory,
+    toggle: (next: boolean) => {
+      if (openCategory) onToggleCategory(openCategory.id, next);
+    },
+  };
+  useLayoutEffect(() => {
+    if (!onRowsCategoryChange) return;
+    onRowsCategoryChange(
+      categoryInCard && openCategory
+        ? {
+            id: openCategory.id,
+            label: openCategory.label,
+            icon: PUSH_CATEGORY_ICONS[openCategory.id] ?? Bell,
+            backLabel: cardOnCalendarPage ? "Back to Calendar" : "Back",
+            on: cardCategoryOn,
+            back: () => cardActionsRef.current.back(),
+            toggle: (next: boolean) => cardActionsRef.current.toggle(next),
+          }
+        : null,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryInCard, openCategory?.id, cardOnCalendarPage, cardCategoryOn, onRowsCategoryChange]);
+  useLayoutEffect(() => () => onRowsCategoryChange?.(null), [onRowsCategoryChange]);
+
   // The phone layout's category page: a title card (Back to Notifications, icon, name, the whole category's
   // switch), then its kinds.
   const renderCategoryRowsPage = (category: PushNotificationCategory) => {
@@ -882,7 +957,12 @@ export function PushNotificationSettings({
     const calendarPageLead = calendarPage ? calendarReminderLeadForCategory(categoryReminders, calendarPage.id, reminderLead) : null;
     return (
       <div className="space-y-4">
-        <div className="flex items-center gap-3 rounded-[18px] border p-4" style={cardStyle}>
+        {rowsTitleInCard ? null : (
+        <div
+          className={`flex items-center gap-3 rounded-[18px] border p-4 ${rowsPageTopPx ? "sticky z-[1]" : ""}`}
+          // (Held at the top of its page's scroll area — which already starts rowsPageTopPx down, its padding.)
+          style={rowsPageTopPx ? { ...cardStyle, top: 0, height: rowsTitleCardHeightPx } : cardStyle}
+        >
           <button
             type="button"
             onClick={calendarPage ? closeCalendarCategoryPage : closeCategory}
@@ -900,6 +980,7 @@ export function PushNotificationSettings({
           <p className="min-w-0 flex-1 truncate text-[20px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>{category.label}</p>
           <Toggle checked={categoryOn} onChange={(next) => onToggleCategory(category.id, next)} />
         </div>
+        )}
         {calendarPage ? (
           <div className="overflow-hidden rounded-[18px] border" style={cardStyle}>
             <div className="flex items-center gap-3 px-4 py-3">
@@ -976,7 +1057,9 @@ export function PushNotificationSettings({
               onTouchEnd={onPaneTouchEnd}
               onTouchCancel={onPaneTouchEnd}
               data-horizontal-swipe-scroll="true"
-              className={`fixed inset-x-0 bottom-0 ${layout === "rows" ? ROWS_PAGE_TOP_CLASS : "top-12"} z-[30] flex touch-pan-y flex-col ${SLIDE_CLASS}`}
+              className={`fixed inset-x-0 bottom-0 ${
+                layout === "rows" ? (rowsPageTopPx ? (rowsTitleInCard ? "top-0 z-[30]" : "top-0 z-[32]") : `${ROWS_PAGE_TOP_CLASS} z-[30]`) : "top-12 z-[30]"
+              } flex touch-pan-y flex-col ${SLIDE_CLASS}`}
               style={{ transform: isCategoryOpen ? "translate3d(0, 0, 0)" : "translate3d(100%, 0, 0)", backgroundColor: "var(--bg-app, var(--panel-bg))" }}
             >
               {layout === "rows" ? null : (
@@ -1000,8 +1083,14 @@ export function PushNotificationSettings({
                 </div>
               )}
               <div
+                data-slide-over-scroller="true"
                 className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
-                style={{ paddingBottom: "max(16px, env(safe-area-inset-bottom, 0px))" }}
+                style={{
+                  paddingBottom: "max(16px, env(safe-area-inset-bottom, 0px))",
+                  ...(layout === "rows" && rowsPageTopPx
+                    ? { paddingTop: rowsTitleInCard ? rowsPageTopPx + (rowsTitleCardHeightPx ?? 0) + 16 : rowsPageTopPx }
+                    : {}),
+                }}
               >
                 {layout === "rows" ? renderCategoryRowsPage(openCategory) : renderCategoryBody(openCategory)}
               </div>
@@ -1067,11 +1156,6 @@ export function PushNotificationSettings({
         className="h-8 w-full min-w-0 bg-transparent text-[12.5px] outline-none"
         style={{ color: "var(--text-main)" }}
       />
-      {search ? (
-        <button type="button" onClick={() => setSearch("")} aria-label="Clear search" className="shrink-0" style={mutedText}>
-          <X size={14} />
-        </button>
-      ) : null}
     </label>
   );
   const renderSearchResults = (className: string, style: CSSProperties) =>

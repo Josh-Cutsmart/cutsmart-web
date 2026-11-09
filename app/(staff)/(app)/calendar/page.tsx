@@ -1023,8 +1023,8 @@ function CalendarPageContent() {
   // The toolbar's search (the round button beside the view switcher): only events whose title, location, notes,
   // project or category has it — checked after what they can't see is cleared, so it can't find that. Only while
   // it's open. With something typed it stays open, so the calendar can be browsed for what was found: a tap
-  // anywhere else just puts the keyboard away. Its X clears and closes it; once it's empty (the X, or the text
-  // deleted), a tap anywhere else closes it. What was typed is kept for when it's opened again — this browser
+  // anywhere else just puts the keyboard away. Its X (the app's, as every search box's) clears it; once it's empty (the
+  // X, or the text deleted), a tap anywhere else closes it. What was typed is kept for when it's opened again — this browser
   // session, even after leaving the calendar (sessionStorage).
   const [isEventSearchOpen, setIsEventSearchOpen] = useState(false);
   const [eventSearch, setEventSearch] = useState("");
@@ -1071,6 +1071,8 @@ function CalendarPageContent() {
     if (!isEventSearchOpen) return;
     const onPointerDown = (event: PointerEvent) => {
       if (eventSearchRowRef.current?.contains(event.target as Node)) return;
+      // (The X clearing it: part of the search, drawn over the page — components/search-clear-buttons.tsx.)
+      if ((event.target as Element | null)?.closest?.("[data-search-clear-button]")) return;
       leaveEventSearchRef.current();
     };
     document.addEventListener("pointerdown", onPointerDown, true);
@@ -1288,6 +1290,39 @@ function CalendarPageContent() {
       return;
     }
     closeModal();
+  };
+  // Swiped away while it's being edited (components/modal-swipe-to-close.tsx presses this, not its X): it closes just as
+  // ever, and its changes are saved as it goes — unchanged, it just closes. Ones that can't be saved yet (no title or
+  // category) keep it open, saying why (the swipe springs it back); a save that fails brings it back as it was, saying so.
+  const swipeAwayDraft = () => {
+    const current = draft;
+    if (!current || !companyId) {
+      closeModal();
+      return;
+    }
+    const savedEvent = current.isNew ? null : events.find((e) => e.id === current.id) ?? null;
+    const changed = current.isNew ? newDraftEdited : !savedEvent || draftsDiffer(current, draftFromEvent(savedEvent));
+    if (!changed || !canEditEvent(current)) {
+      closeModal();
+      return;
+    }
+    if (!current.title.trim() || !current.categoryId) {
+      void submitDraft();
+      return;
+    }
+    const event = eventFromDraft({ ...current, staffUids: draftStaffUids(current) });
+    if (!event) {
+      setModalError("Check the dates and times.");
+      return;
+    }
+    closeModal();
+    void saveCalendarEvent(companyId, current.isNew ? event : editedByMe(event)).then((result) => {
+      if (result.ok) return;
+      setEventMode("edit");
+      setDraft(current);
+      setRenderedDraft(current);
+      setModalError(result.error === "permission-denied" ? "You don't have permission to save events." : "Couldn't save — try again.");
+    });
   };
   // The event pop-up's … > Duplicate: a new event with this one's details — title, times, location, notes,
   // project — but no category (they choose one), opened ready to add.
@@ -3450,6 +3485,7 @@ function CalendarPageContent() {
                 // z-[2]: over the switcher's options (z-[1]) as it slides across them. Its own outline is only
                 // while it's the round button on its own: once it joins the switcher, the row's outline (below)
                 // is the one outline round both, so its curved edge never shows crossing the switcher.
+                data-search-own-outline="true"
                 className="peer absolute inset-y-0 right-0 z-[2] flex items-center overflow-hidden rounded-full border"
                 style={{
                   width: isEventSearchOpen ? "100%" : searchPillPx,
@@ -3485,17 +3521,6 @@ function CalendarPageContent() {
                   className="h-full min-w-0 flex-1 bg-transparent text-[13px] font-medium outline-none max-md:text-[15px]"
                   style={{ color: "var(--text-main)", opacity: isEventSearchOpen ? 1 : 0, transition: "opacity 180ms ease 120ms" }}
                 />
-                <button
-                  type="button"
-                  onClick={() => closeEventSearch(true)}
-                  className="mr-1 inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full transition hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"
-                  style={{ color: "var(--text-muted)", opacity: isEventSearchOpen ? 1 : 0, transition: "opacity 180ms ease 120ms", pointerEvents: isEventSearchOpen ? undefined : "none" }}
-                  aria-label="Clear search"
-                  title="Clear search"
-                  tabIndex={isEventSearchOpen ? 0 : -1}
-                >
-                  <X size={15} />
-                </button>
               </div>
               {/* While searching: one outline round the switcher and the search together (blue while typing). */}
               <span
@@ -3527,18 +3552,6 @@ function CalendarPageContent() {
                     className="h-full min-w-0 flex-1 bg-transparent text-[13px] font-medium outline-none"
                     style={{ color: "var(--text-main)" }}
                   />
-                  {eventSearch ? (
-                    <button
-                      type="button"
-                      onClick={() => changeEventSearch("")}
-                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"
-                      style={{ color: "var(--text-muted)" }}
-                      aria-label="Clear search"
-                      title="Clear search"
-                    >
-                      <X size={14} />
-                    </button>
-                  ) : null}
                 </label>
               </div>
             )}
@@ -3840,6 +3853,11 @@ function CalendarPageContent() {
                   icon={<span className="block h-3.5 w-3.5 rounded-full transition-colors" style={{ backgroundColor: draftCategory.color }} />}
                   onClose={closeModal}
                 />
+                {/* What swiping it away does while it's being edited: saves as it closes (swipeAwayDraft). Not shown — the
+                    swipe presses it. */}
+                {!readOnly ? (
+                  <button type="button" data-swipe-close-action="" hidden tabIndex={-1} aria-hidden="true" onClick={swipeAwayDraft} />
+                ) : null}
                 <form
                   className="flex min-h-0 flex-1 flex-col"
                   onSubmit={(e) => {

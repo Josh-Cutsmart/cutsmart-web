@@ -4,6 +4,7 @@ import { DocumentScrollbar } from "@/components/glass-scrollbar-thumb";
 import { ScrollLockWatcher } from "@/components/scroll-lock-watcher";
 import { DropdownSqueezeWatcher } from "@/components/dropdown-squeeze-watcher";
 import { ModalSwipeToClose } from "@/components/modal-swipe-to-close";
+import { SearchClearButtons } from "@/components/search-clear-buttons";
 import { UndoBarProvider } from "@/components/undo-bar";
 
 export const metadata: Metadata = {
@@ -204,6 +205,8 @@ export default function RootLayout({
         <DropdownSqueezeWatcher />
         {/* A touch screen: any pop-up swiped down from its top closes — every route. */}
         <ModalSwipeToClose />
+        {/* Any search box with text in it: an X inside its right-hand end that clears it — every route. */}
+        <SearchClearButtons />
       </body>
     </html>
   );

@@ -126,6 +126,19 @@ function UserFilterRow({ label, color, checked, onPick }: { label: string; color
   );
 }
 
+// Up to two initials ("Mere Tawhiri" → "MT"), for a person's badge.
+function initialsOf(name: string): string {
+  return (
+    String(name || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() ?? "")
+      .join("") || "?"
+  );
+}
+
 // A person the board's cards can be assigned to, for the Users filter.
 export type BoardFilterUser = { id: string; name: string; color?: string };
 
@@ -322,6 +335,26 @@ export function BoardUserFilterButton({
         aria-label={`Filter by user: ${label}`}
       >
         <Users size={14} className="shrink-0" />
+        {/* While it's filtering: the badges of the people it's showing, beside the icon (up to three, overlapping). */}
+        {isFiltering ? (
+          <span className="flex shrink-0 items-center" aria-hidden="true">
+            {value.slice(0, 3).map((id, index) => {
+              const user = users.find((candidate) => candidate.id === id);
+              const unassigned = id === UNASSIGNED_USER_FILTER_ID;
+              const name = unassigned ? "" : user?.name || "";
+              return (
+                <span
+                  key={id}
+                  className={`inline-flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-semibold text-white ring-2 ring-white ${index ? "-ml-1.5" : ""}`}
+                  style={{ backgroundColor: unassigned ? "#94A3B8" : user?.color || "#64748B" }}
+                >
+                  {unassigned ? "–" : initialsOf(name)}
+                </span>
+              );
+            })}
+            {value.length > 3 ? <span className="ml-1 text-[11px] font-semibold">+{value.length - 3}</span> : null}
+          </span>
+        ) : null}
         <span className={`max-w-[140px] truncate ${labelClassName ?? ""}`}>{label}</span>
       </button>
       {menuPos && typeof document !== "undefined"

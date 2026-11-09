@@ -69089,16 +69089,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       className="h-full w-full bg-transparent text-[12px] outline-none"
                       style={{ color: projectPalette.inputText }}
                     />
-                    {changesSearchQuery && (
-                      <button
-                        type="button"
-                        onClick={() => setChangesSearchQuery("")}
-                        className="inline-flex shrink-0 items-center justify-center rounded-full"
-                        aria-label="Clear search"
-                      >
-                        <X size={13} style={{ color: projectPalette.textMuted }} />
-                      </button>
-                    )}
                   </div>
                 </CardHeader>
                 <CardContent className="h-[560px] overflow-auto pt-2 text-[12px]">

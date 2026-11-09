@@ -320,30 +320,12 @@ export function GlobalSearch({ pages, canOpenSettings }: { pages: GlobalSearchPa
               onKeyDown={onInputKeyDown}
               placeholder="Search projects, leads, contacts, events…"
               aria-label="Search"
+              data-search-keep-type="true"
               autoComplete="off"
               spellCheck={false}
               className="min-w-0 flex-1 bg-transparent text-[15px] font-medium outline-none placeholder:font-normal placeholder:text-[var(--text-muted)] max-sm:text-[16px]"
               style={{ color: "var(--text-main)" }}
             />
-            {/* Clears what's typed (the box keeps its cursor). */}
-            {query ? (
-              <button
-                type="button"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => {
-                  setQuery("");
-                  setExpanded({});
-                  setActiveKey("");
-                  inputRef.current?.focus({ preventScroll: true });
-                }}
-                aria-label="Clear search"
-                title="Clear"
-                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition hover:brightness-95"
-                style={{ backgroundColor: "color-mix(in srgb, var(--text-main) 10%, transparent)", color: "var(--text-main)" }}
-              >
-                <X size={13} strokeWidth={2.5} />
-              </button>
-            ) : null}
             {/* Only while there's nothing to search yet (the first time). Brought up to date after that, it's done quietly: the
                 last results are already there to search meanwhile. */}
             {loading && !items.length ? (

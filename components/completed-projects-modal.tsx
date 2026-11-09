@@ -1072,11 +1072,6 @@ export function CompletedProjectsModal({
               className="h-8 w-full min-w-0 bg-transparent text-[12px] font-medium outline-none"
               style={{ color: "var(--text-main)" }}
             />
-            {search ? (
-              <button type="button" onClick={() => setSearch("")} aria-label="Clear search" className="shrink-0" style={{ color: "var(--text-muted)" }}>
-                <X size={13} />
-              </button>
-            ) : null}
           </div>
           <button type="button" onClick={onClose} className={modalCloseButtonClass} aria-label="Close">
             <X size={16} />

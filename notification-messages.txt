@@ -243,6 +243,11 @@ message: "{event}" for {project} is {when}.
 title: Upcoming: {event}
 message: "{event}" is {when}.
 
+# An event's line when several come as one notification (events due at the same time, or held by "Time between
+# notifications") — shorter than its own, without its project. Can use {event} and {when}.
+[calendar_reminder.in_group]
+message: "{event}" is {when}.
+
 
 # ---------- CUTSMART ----------
 

@@ -14,6 +14,7 @@ import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { GlassDropdown, GLASS_MENU_CLASS, GLASS_MENU_MIN_WIDTH_PHONE_PX, GLASS_MENU_MIN_WIDTH_PX, GLASS_MENU_STYLE, glassMenuHeight } from "@/components/glass-dropdown";
 import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
 import { attachBoardDragScroll } from "@/lib/board-drag-scroll";
+import { attachBoardSnapSettle } from "@/lib/board-snap-settle";
 import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
 import { collapseBoardColumnAnimated, expandBoardColumnAnimated } from "@/lib/board-column-collapse";
 import { BoardColumnCards, BoardColumnFrame, ColumnCollapseChevrons, getBoardColumnVisibleRect } from "@/components/board-column-frame";
@@ -522,9 +523,12 @@ export default function DashboardPage() {
     if (!el) return;
     const detachArrowKeyScroll = attachBoardArrowKeyScroll(el);
     const detachDragScroll = attachBoardDragScroll(el);
+    // (Phones: a fast fling left between two columns glides onto the nearest once it's stopped.)
+    const detachSnapSettle = attachBoardSnapSettle(el);
     boardScrollContainerCleanupRef.current = () => {
       detachArrowKeyScroll();
       detachDragScroll();
+      detachSnapSettle();
     };
   }, []);
   const projectBoardDragGhost = useDragGhost();
@@ -2778,15 +2782,6 @@ export default function DashboardPage() {
                                       </p>
                                     ) : null}
                                   </div>
-                                  <button
-                                    type="button"
-                                    disabled
-                                    className="inline-flex h-8 shrink-0 items-center justify-center rounded-[8px] border px-3 text-[12px] font-semibold opacity-60"
-                                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-                                    title="Coming soon"
-                                  >
-                                    View
-                                  </button>
                                 </div>
                               );
                             })}
@@ -3095,7 +3090,7 @@ export default function DashboardPage() {
                     users={boardFilterUsers}
                     value={projectUserFilter}
                     onChange={setProjectUserFilter}
-                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition hover:brightness-95"
+                    className="inline-flex h-9 min-w-9 shrink-0 items-center justify-center gap-1 rounded-full border px-2 transition hover:brightness-95"
                     labelClassName="hidden"
                     style={{ backgroundColor: dashboardPalette.panelBg, color: dashboardPalette.textMuted, borderColor: dashboardPalette.border }}
                   />

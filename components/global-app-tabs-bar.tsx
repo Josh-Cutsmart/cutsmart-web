@@ -29,6 +29,8 @@ import {
   Shield,
   Sparkles,
   Trash2,
+  ListChecks,
+  MailOpen,
   Unlock,
   UserMinus,
   Users,
@@ -626,6 +628,21 @@ export function GlobalAppTabsBar() {
   const unlockAddressesSeenRef = useRef(new Set<string>());
   // The list's filter: "all", "unread", or a category's id (renderNotifFilters).
   const [notifFilter, setNotifFilter] = useState("all");
+  // Selecting several (the filter row's select button): a tap ticks a notification instead of opening it, and the row
+  // becomes what to do with the ticked ones. Ended as the panel closes.
+  const [notifSelecting, setNotifSelecting] = useState(false);
+  const [notifSelectedIds, setNotifSelectedIds] = useState<string[]>([]);
+  const toggleNotifSelected = (id: string) =>
+    setNotifSelectedIds((prev) => (prev.includes(id) ? prev.filter((other) => other !== id) : [...prev, id]));
+  const stopNotifSelecting = () => {
+    setNotifSelecting(false);
+    setNotifSelectedIds([]);
+  };
+  useEffect(() => {
+    if (isNotifOpen) return;
+    setNotifSelecting(false);
+    setNotifSelectedIds([]);
+  }, [isNotifOpen]);
   const notifMenuRef = useRef<HTMLDivElement | null>(null);
   const [remindAmount, setRemindAmount] = useState(1);
   const [remindUnit, setRemindUnit] = useState<RemindUnit>("days");
@@ -1939,6 +1956,52 @@ export function GlobalAppTabsBar() {
       );
     });
   }
+  // The ticked ones (selecting): marked read — or unread, when they all are already.
+  function setSelectedNotifsRead() {
+    const uid = user?.uid;
+    if (!uid) return;
+    const ticked = notifRows.filter((row) => notifSelectedIds.includes(row.id));
+    const read = ticked.some((row) => !row.read);
+    setNotifRows((prev) => prev.map((item) => (notifSelectedIds.includes(item.id) ? { ...item, read } : item)));
+    ticked.forEach((row) => void setUserNotificationRead(uid, row.id, read));
+    stopNotifSelecting();
+  }
+  // ...or cleared, all together, with one Undo bar that puts every one back where it was.
+  function clearSelectedNotifs() {
+    const uid = user?.uid;
+    if (!uid) return;
+    const ticked = notifRows
+      .map((row, at) => ({ row, at }))
+      .filter(({ row }) => notifSelectedIds.includes(row.id));
+    if (!ticked.length) return;
+    const ids = new Set(ticked.map(({ row }) => row.id));
+    setNotifRows((prev) => prev.filter((item) => !ids.has(item.id)));
+    stopNotifSelecting();
+    const saved = Promise.all(
+      ticked.map(async ({ row, at }) => {
+        const data = await readUserNotificationDoc(uid, row.id);
+        await deleteUserNotification(uid, row.id);
+        return { row, at, data };
+      }),
+    );
+    offerUndo(`${ticked.length} notification${ticked.length === 1 ? "" : "s"} cleared`, async () => {
+      const back = await saved;
+      const restored: typeof back = [];
+      for (const entry of back) {
+        if (!entry.data) continue;
+        seenNotifIdsRef.current?.add(notifSeenKey(entry.row));
+        if (await restoreUserNotificationDoc(uid, entry.row.id, entry.data)) restored.push(entry);
+      }
+      setNotifRows((prev) => {
+        let next = [...prev];
+        for (const { row, at } of restored.sort((a, b) => a.at - b.at)) {
+          if (next.some((item) => item.id === row.id)) continue;
+          next = [...next.slice(0, Math.max(0, at)), row, ...next.slice(Math.max(0, at))];
+        }
+        return next;
+      });
+    });
+  }
   // Remind me in…: it stays in the list as it is, then goes to the top as new and unread at that time, popped up
   // as a new one is — and sent to their phone/desktop again then (the scheduled job).
   function remindNotifLater(row: UserNotificationRow) {
@@ -2112,13 +2175,21 @@ export function GlobalAppTabsBar() {
                     onContextMenu={(event) => {
                       event.preventDefault();
                       endNotifLongPress();
+                      if (notifSelecting) return;
                       openNotifMenu(row, event.clientX, event.clientY);
                     }}
-                    onTouchStart={(event) => startNotifLongPress(row, event)}
+                    onTouchStart={(event) => {
+                      if (!notifSelecting) startNotifLongPress(row, event);
+                    }}
                     onTouchMove={moveNotifLongPress}
                     onTouchEnd={endNotifLongPress}
                     onTouchCancel={endNotifLongPress}
+                    aria-pressed={notifSelecting ? notifSelectedIds.includes(row.id) : undefined}
                     onClick={(event) => {
+                      if (notifSelecting) {
+                        toggleNotifSelected(row.id);
+                        return;
+                      }
                       // Letting go of a press-and-hold (its menu's open) isn't a tap on it.
                       if (suppressNotifClickRef.current === row.id) {
                         suppressNotifClickRef.current = "";
@@ -2134,10 +2205,27 @@ export function GlobalAppTabsBar() {
                       userSelect: "none",
                       borderColor: unread ? `color-mix(in srgb, ${color} 32%, var(--glass-border))` : "var(--glass-border)",
                       backgroundColor: unread ? `color-mix(in srgb, ${color} 9%, var(--panel-bg))` : NOTIF_CARD_BG,
-                      boxShadow: menuOpen ? `0 0 0 2px color-mix(in srgb, ${color} 45%, transparent)` : undefined,
+                      boxShadow:
+                        menuOpen || (notifSelecting && notifSelectedIds.includes(row.id))
+                          ? `0 0 0 2px color-mix(in srgb, ${notifSelecting ? "var(--brand)" : color} 45%, transparent)`
+                          : undefined,
                     }}
                   >
                     {unread ? <span aria-hidden="true" className="absolute inset-y-2.5 left-0 w-[3px] rounded-r-full" style={{ backgroundColor: color }} /> : null}
+                    {/* Selecting: its tick, ahead of everything else. */}
+                    {notifSelecting ? (
+                      <span
+                        aria-hidden="true"
+                        className="mt-2 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 transition-colors max-lg:mt-2.5"
+                        style={
+                          notifSelectedIds.includes(row.id)
+                            ? { borderColor: "var(--brand)", backgroundColor: "var(--brand)", color: "#ffffff" }
+                            : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }
+                        }
+                      >
+                        {notifSelectedIds.includes(row.id) ? <Check size={14} strokeWidth={3} /> : null}
+                      </span>
+                    ) : null}
                     <span className="glass-shine inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] border max-lg:h-11 max-lg:w-11" style={glassShineStyle(color)}>
                       <Icon size={18} color="#ffffff" strokeWidth={2.2} />
                     </span>
@@ -2290,6 +2378,70 @@ export function GlobalAppTabsBar() {
         </button>
       );
     };
+    const roundButton =
+      "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition hover:brightness-95 disabled:opacity-45 max-lg:h-10 max-lg:w-10";
+    const plainButtonStyle = { borderColor: "var(--glass-border)", backgroundColor: NOTIF_CARD_BG, color: "var(--text-main)" };
+    if (notifSelecting) {
+      const shownIds = notifRows
+        .filter((row) => (notifFilter === "all" ? true : notifFilter === "unread" ? !row.read : notifCategoryIdOf(row.type) === notifFilter))
+        .map((row) => row.id);
+      const allTicked = shownIds.length > 0 && shownIds.every((id) => notifSelectedIds.includes(id));
+      const ticked = notifRows.filter((row) => notifSelectedIds.includes(row.id));
+      const markingRead = ticked.some((row) => !row.read);
+      return (
+        <div className="flex shrink-0 items-center gap-2 px-4 pb-2 pt-1 max-lg:px-3.5">
+          <button
+            type="button"
+            onMouseDown={handleAuxButtonMouseDown}
+            onClick={stopNotifSelecting}
+            className={roundButton}
+            style={plainButtonStyle}
+            aria-label="Done selecting"
+            title="Done"
+          >
+            <X size={16} />
+          </button>
+          <p className="min-w-0 flex-1 truncate text-[13px] font-medium max-lg:text-[14px]" style={{ color: "var(--text-main)" }}>
+            {notifSelectedIds.length ? `${notifSelectedIds.length} selected` : "Tap to select"}
+          </p>
+          <button
+            type="button"
+            onMouseDown={handleAuxButtonMouseDown}
+            onClick={() => setNotifSelectedIds(allTicked ? [] : shownIds)}
+            className={roundButton}
+            style={allTicked ? { ...glassShineStyle("var(--brand)"), color: "#ffffff" } : plainButtonStyle}
+            aria-label={allTicked ? "Select none" : "Select all"}
+            title={allTicked ? "Select none" : "Select all"}
+          >
+            <CheckCheck size={16} />
+          </button>
+          <button
+            type="button"
+            onMouseDown={handleAuxButtonMouseDown}
+            onClick={setSelectedNotifsRead}
+            disabled={!ticked.length}
+            className={roundButton}
+            style={plainButtonStyle}
+            aria-label={markingRead ? "Mark read" : "Mark unread"}
+            title={markingRead ? "Mark read" : "Mark unread"}
+          >
+            <MailOpen size={16} />
+          </button>
+          <button
+            type="button"
+            onMouseDown={handleAuxButtonMouseDown}
+            onClick={clearSelectedNotifs}
+            disabled={!ticked.length}
+            className={roundButton}
+            style={{ ...plainButtonStyle, color: "var(--danger-strong)" }}
+            aria-label="Clear"
+            title="Clear"
+          >
+            <Trash2 size={16} />
+          </button>
+        </div>
+      );
+    }
     return (
       <div className="flex shrink-0 items-center gap-2 px-4 pb-2 pt-1 max-lg:px-3.5">
         {bubble("all", "All", notifRows.length)}
@@ -2308,6 +2460,21 @@ export function GlobalAppTabsBar() {
             color: "var(--text-main)",
           }}
         />
+        {/* Select several — then mark them read, or clear them, together. */}
+        <button
+          type="button"
+          onMouseDown={handleAuxButtonMouseDown}
+          onClick={() => {
+            setNotifMenu(null);
+            setNotifSelecting(true);
+          }}
+          className={roundButton}
+          style={plainButtonStyle}
+          aria-label="Select notifications"
+          title="Select"
+        >
+          <ListChecks size={16} />
+        </button>
       </div>
     );
   }

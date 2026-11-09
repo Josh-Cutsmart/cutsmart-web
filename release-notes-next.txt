@@ -1,15 +1,31 @@
 Version: v0.6.2
 
 whatsNew: [
+<u><b>User Settings</b></u>
+<ul>
+<li>A new layout on computers: your profile and the sections down the left, the one you pick on the right, with a search</li>
+<li>On phones: one see-through bar with the search built in, your name and badge at the top (tap it for General), and Log Out beside it</li>
+<li>Tap your badge and it grows to full size with its colours under it, so you see each colour on it as you pick</li>
+<li>Tap a setting's name to see what it does. Bigger switches, and simpler name and number editing</li>
+</ul>
+
+<u><b>Projects</b></u>
+<ul>
+<li>Calmer scroll bars in the project's drop-down menus</li>
+</ul>
+
 <u><b>Dashboard and Leads</b></u>
 <ul>
 <li>A new <b>Users</b> filter beside Sort: tick the people whose projects or leads you want to see (or Unassigned). Works in the list and the columns, and it's remembered</li>
 <li>A column's sort menu now says when the whole board's Sort is in charge, and what it's set to</li>
+<li>When filtering by user, the filter button shows their badges</li>
+<li>Inside a column's sub status, the back button sits in the title bar, where the folder icon is</li>
+<li>Calmer scroll bars in the list view</li>
 </ul>
 
 <u><b>Phones</b></u>
 <ul>
-<li>Swiping between Dashboard and Leads columns is smooth again, and every other swipe in the app is quicker to respond</li>
+<li>Swiping between Dashboard and Leads columns is smooth again, and a fast swipe always settles on a column. Every other swipe in the app is quicker to respond</li>
 <li>Swiping sideways along a row of tabs or filters, or a wide table, scrolls it instead of opening a side menu (the Archive's tabs and months)</li>
 <li>Tapping the page you're already on in the side menu closes the menu</li>
 <li>Contacts' title bar, search and the top bar are see-through like the other pages, with your contacts scrolling behind them</li>
@@ -20,5 +36,14 @@ whatsNew: [
 <ul>
 <li>The Log Out pop-up's buttons match the rest of the app</li>
 <li>Search only shows its loading wheel the first time. After that it updates quietly while your last results are already there</li>
+<li>Every search box works the same way: the same X to clear it, in the same place, and the same look while you're using it. On phones, Contacts' search opens and closes like the Dashboard's</li>
+<li>Notifications: a select button to pick several at once, then mark them read or unread, or clear them</li>
+<li>Calendar: swiping an event away while editing it saves it</li>
+<li>When several event reminders come as one notification, each event is listed without its project, so they're quicker to read</li>
+<li>The side menu's sections slide up and down as they fold and open</li>
+<li>The computer's side menu uses the same colours as the phone's</li>
+<li>Changing between light and dark in User Settings now shows straight away on the side menu's slide-up settings card, and the other way round</li>
+<li>The settings panel that slides up from the bottom of the side menu has rounded top corners and a shadow along its top, with round buttons. Tapping your badge there opens the full-size badge with its colours, as in User Settings. On computers there's now a cog beside your name that goes straight to User Settings, and clicking anywhere else on that bar opens the panel. On phones its boxes are rounded too, and you can swipe it down to close it</li>
+<li>The Staff pop-up no longer has a View button</li>
 </ul>
 ]

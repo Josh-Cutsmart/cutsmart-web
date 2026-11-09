@@ -57,6 +57,8 @@ export const NOTIFICATION_DEFAULTS = {
   specs_pending: { title: "Specifications not submitted yet", message: "{client} hasn't submitted the specifications for {project} yet — sent {ago}." },
   calendar_reminder: { title: "Upcoming: {event}", message: '"{event}" for {project} is {when}.' },
   "calendar_reminder.no_project": { title: "Upcoming: {event}", message: '"{event}" is {when}.' },
+  // An event's line in a notification of several together — shorter than its own, without its project.
+  "calendar_reminder.in_group": { message: '"{event}" is {when}.' },
   app_version: { title: "New version {version}", message: "CutSmart has been updated.", phone: "See what's new in CutSmart." },
   role_change: { title: "Role updated", message: 'Your role in {company} changed from "{old_role}" to "{new_role}".' },
   access_code_used: { title: "Access code used", message: "{person} joined with your access code {code}." },

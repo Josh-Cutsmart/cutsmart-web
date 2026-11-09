@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
+import { usePathname } from "next/navigation";
 
 // A plain-div replacement for a scroll container's native scrollbar — needed anywhere content is
 // meant to scroll under a fixed/sticky glass header (vertical), or where the container's own
@@ -136,7 +137,11 @@ function titleBarsBottom(top: number, bottom: number, left: number, right: numbe
 // root layout.
 export function DocumentScrollbar() {
   const documentRef = useRef<HTMLElement | null>(typeof document !== "undefined" ? document.documentElement : null);
-  return <GlassScrollbarThumb scrollRef={documentRef} />;
+  // The Dashboard's and Leads' (their lists run long): the quieter one — thinner and fainter, firming up while it's
+  // hovered or held — as Nesting's.
+  const pathname = usePathname();
+  const subtle = /^\/(dashboard|leads)\/?$/.test(pathname || "");
+  return <GlassScrollbarThumb scrollRef={documentRef} subtle={subtle} />;
 }
 
 export function GlassScrollbarThumb({

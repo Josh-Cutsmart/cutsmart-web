@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { Check, ChevronDown, Search, X } from "lucide-react";
+import { Check, ChevronDown, Search } from "lucide-react";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { CutlistHwdSize } from "./cutlist-entry";
 
@@ -82,11 +82,6 @@ export function CutlistListToolbar({
           className="min-w-0 flex-1 bg-transparent text-[14px] font-medium outline-none placeholder:text-[var(--text-muted)]"
           style={{ color: "var(--text-main)" }}
         />
-        {search ? (
-          <button type="button" onClick={() => onSearch("")} aria-label="Clear search" className="shrink-0" style={{ color: "var(--text-muted)" }}>
-            <X size={15} />
-          </button>
-        ) : null}
       </label>
       {filter}
       {select ? (
