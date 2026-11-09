@@ -3983,7 +3983,11 @@ export function AppShell({
                   // ends, over the menu above it.
                   borderColor: isUserSettingsPanelOpen ? "transparent" : mobileNavHeadingColor,
                   height: (isUserSettingsPanelOpen ? mobilePanelContentHeight : mobileRestContentHeight) ?? undefined,
-                  boxShadow: isUserSettingsPanelOpen ? "0 -14px 28px -14px rgba(15, 23, 42, 0.32)" : "none",
+                  // (…and its glass on down through the menu's padding under it, to the bottom of the screen: a band of its
+                  // colour under it — the menu cuts off what's past its own bottom.)
+                  boxShadow: isUserSettingsPanelOpen
+                    ? "0 -14px 28px -14px rgba(15, 23, 42, 0.32), 0 40px 0 0 var(--glass-bg-strong)"
+                    : "none",
                   // Its top corners rounded while it's up, on the computer's panel's stronger glass (so its shape shows).
                   borderTopLeftRadius: isUserSettingsPanelOpen ? PANEL_TOP_RADIUS_PX : 0,
                   borderTopRightRadius: isUserSettingsPanelOpen ? PANEL_TOP_RADIUS_PX : 0,

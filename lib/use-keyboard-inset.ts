@@ -274,8 +274,9 @@ function isTextEntry(el: HTMLElement): boolean {
   return el instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(el.type) && !el.readOnly;
 }
 
-// A box a touch screen's keyboard comes up for (a date or time shows the phone's own picker instead).
-function expectsKeyboard(el: HTMLElement): boolean {
+// A box a touch screen's keyboard comes up for (a date or time shows the phone's own picker instead). (Also used by
+// components/keyboard-tap-away.tsx.)
+export function expectsKeyboard(el: HTMLElement): boolean {
   if (!isTextEntry(el) || !window.matchMedia("(pointer: coarse)").matches) return false;
   if (el.getAttribute("inputmode") === "none") return false;
   return !(el instanceof HTMLInputElement && (el.type === "date" || el.type === "time" || el.type === "datetime-local"));

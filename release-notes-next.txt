@@ -28,6 +28,7 @@ whatsNew: [
 <li>Swiping between Dashboard and Leads columns is smooth again, and a fast swipe always settles on a column. Every other swipe in the app is quicker to respond</li>
 <li>Swiping sideways along a row of tabs or filters, or a wide table, scrolls it instead of opening a side menu (the Archive's tabs and months)</li>
 <li>Tapping the page you're already on in the side menu closes the menu</li>
+<li>With the keyboard up, tapping anywhere else just puts the keyboard away, without also opening or pressing what you tapped</li>
 <li>Contacts' title bar, search and the top bar are see-through like the other pages, with your contacts scrolling behind them</li>
 <li>User Settings' back button is round and green like the others, and Archive Project matches the other buttons</li>
 </ul>

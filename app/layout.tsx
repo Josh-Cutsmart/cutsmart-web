@@ -5,6 +5,7 @@ import { ScrollLockWatcher } from "@/components/scroll-lock-watcher";
 import { DropdownSqueezeWatcher } from "@/components/dropdown-squeeze-watcher";
 import { ModalSwipeToClose } from "@/components/modal-swipe-to-close";
 import { SearchClearButtons } from "@/components/search-clear-buttons";
+import { KeyboardTapAway } from "@/components/keyboard-tap-away";
 import { UndoBarProvider } from "@/components/undo-bar";
 
 export const metadata: Metadata = {
@@ -207,6 +208,8 @@ export default function RootLayout({
         <ModalSwipeToClose />
         {/* Any search box with text in it: an X inside its right-hand end that clears it — every route. */}
         <SearchClearButtons />
+        {/* A touch screen with the keyboard up: a tap outside the box just puts it away — every route. */}
+        <KeyboardTapAway />
       </body>
     </html>
   );
