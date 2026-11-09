@@ -25,7 +25,7 @@ export function slideToTopThen(then: () => void): void {
     return;
   }
   sliding = true;
-  // (The document's scrolling is heard on the window.)
+  // (The document's own scrolling is heard on the window, not on the document.)
   const heard: HTMLElement | Window = scroller === page ? window : scroller;
   let timer = 0;
   const finish = () => {
