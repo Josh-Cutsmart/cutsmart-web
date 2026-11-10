@@ -1146,17 +1146,17 @@ export function PushNotificationSettings({
       triggerStyle={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
     />
   );
-  const renderSearchBar = (className: string, style: CSSProperties) => (
-    <label className={`flex items-center gap-2 border px-3 ${className}`} style={style}>
-      <Search size={14} className="shrink-0" style={mutedText} />
-      <input
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        placeholder="Search notifications"
-        className="h-8 w-full min-w-0 bg-transparent text-[12.5px] outline-none"
-        style={{ color: "var(--text-main)" }}
-      />
-    </label>
+  // Opened searched for something (a notification picked in User Settings' search — its own search, the only one now):
+  // what it's showing, and Show all for every category again.
+  const renderSearchShowing = (className: string) => (
+    <div className={`flex items-center justify-between gap-3 ${className}`}>
+      <p className="min-w-0 truncate text-[12.5px] font-medium" style={mutedText}>
+        Matching “{search.trim()}”
+      </p>
+      <button type="button" onClick={() => setSearch("")} className="shrink-0 text-[12.5px] font-semibold" style={{ color: "var(--brand)" }}>
+        Show all
+      </button>
+    </div>
   );
   const renderSearchResults = (className: string, style: CSSProperties) =>
     searchResults.length ? (
@@ -1174,11 +1174,6 @@ export function PushNotificationSettings({
     const rowClass = "flex min-h-[52px] items-center gap-3 px-4 py-2.5";
     return (
       <div className="space-y-4">
-        {showChoices ? (
-          <div inert={choicesOff} style={choicesOffStyle}>
-            {renderSearchBar("h-10 rounded-[12px]", cardStyle)}
-          </div>
-        ) : null}
         <div className={ROWS_CARD_CLASS} style={cardStyle}>
           <div className={rowClass}>
             <Bell size={17} className="shrink-0" style={mutedText} />
@@ -1200,7 +1195,10 @@ export function PushNotificationSettings({
         {showChoices ? (
           <div inert={choicesOff} style={choicesOffStyle}>
             {query ? (
-              renderSearchResults("rounded-[18px] p-4", cardStyle)
+              <>
+                {renderSearchShowing("mb-2 px-1")}
+                {renderSearchResults("rounded-[18px] p-4", cardStyle)}
+              </>
             ) : (
               <div className={ROWS_CARD_CLASS} style={cardStyle}>
                 {PUSH_NOTIFICATION_CATEGORIES.map((category) => {
@@ -1254,9 +1252,11 @@ export function PushNotificationSettings({
               </div>
               <div className="w-[190px] shrink-0">{quietDropdown}</div>
             </div>
-            {renderSearchBar("mb-3 h-9 rounded-[10px]", { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" })}
             {query ? (
-              renderSearchResults("rounded-[12px] p-3", { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" })
+              <>
+                {renderSearchShowing("mb-2")}
+                {renderSearchResults("rounded-[12px] p-3", { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" })}
+              </>
             ) : (
               <div className="space-y-1.5">
                 {PUSH_NOTIFICATION_CATEGORIES.map((category) => {

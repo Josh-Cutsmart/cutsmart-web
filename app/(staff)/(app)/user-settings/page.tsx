@@ -1792,8 +1792,10 @@ export default function UserSettingsPage() {
     const section = USER_SETTINGS_SECTIONS.find((item) => item.id === desktopSection) ?? USER_SETTINGS_SECTIONS[0];
     const SectionIcon = section.icon;
     const roleLabel = companyRoleLabel || user?.role || "";
-    const pick = (sectionId: string) => {
+    // (Notifications from the list: every category; from a search result: just what was picked.)
+    const pick = (sectionId: string, notificationsQuery = "") => {
       setSettingsSearch("");
+      setNotificationsSearch(notificationsQuery);
       setDesktopSection(sectionId);
     };
     return (
@@ -1915,8 +1917,7 @@ export default function UserSettingsPage() {
                       detail={item.detail ?? sectionLabelOf(item.section)}
                       onClick={() => {
                         item.onOpen?.();
-                        if (item.notificationsQuery) setNotificationsSearch(item.notificationsQuery);
-                        pick(item.section);
+                        pick(item.section, item.notificationsQuery);
                       }}
                     >
                       <ChevronRight size={16} className="shrink-0" style={{ color: "var(--text-muted)" }} />

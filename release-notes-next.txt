@@ -7,6 +7,7 @@ whatsNew: [
 <li>On phones: one see-through bar with the search built in, your name and badge at the top (tap it for General), and Log Out beside it</li>
 <li>Tap your badge and it grows to full size with its colours under it, so you see each colour on it as you pick</li>
 <li>Tap a setting's name to see what it does. Bigger switches, and simpler name and number editing</li>
+<li>Notifications no longer has a second search box of its own. The settings search finds every notification, and picking one opens Notifications on just that one, with Show all to see the rest</li>
 </ul>
 
 <u><b>Projects</b></u>
