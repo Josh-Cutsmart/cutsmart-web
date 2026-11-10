@@ -7,6 +7,7 @@ import { ModalSwipeToClose } from "@/components/modal-swipe-to-close";
 import { SearchClearButtons } from "@/components/search-clear-buttons";
 import { KeyboardTapAway } from "@/components/keyboard-tap-away";
 import { PhoneNumberFormat } from "@/components/phone-number-format";
+import { ContextLift } from "@/components/context-lift";
 import { UndoBarProvider } from "@/components/undo-bar";
 
 export const metadata: Metadata = {
@@ -213,6 +214,8 @@ export default function RootLayout({
         <KeyboardTapAway />
         {/* Every phone number box: a NZ mobile laid out as it's typed (021 066 4812) — every route. */}
         <PhoneNumberFormat />
+        {/* Right-clicked: what was right-clicked lifted, the app darkened round it and its menu. */}
+        <ContextLift />
       </body>
     </html>
   );

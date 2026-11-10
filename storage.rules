@@ -1,0 +1,13 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // A company's files (project photos and files, lead photos, its logo, email copies): its own members only. They were
+    // open to any signed-in account. Files opened by their download link (with its own token) aren't affected, and the
+    // server's own uploads skip these rules. (Firebase Storage → Rules; the first time, the console asks to let Storage
+    // read the database for the membership check — allow it.)
+    match /companies/{companyId}/{allPaths=**} {
+      allow read, write: if request.auth != null
+        && firestore.exists(/databases/(default)/documents/companies/$(companyId)/memberships/$(request.auth.uid));
+    }
+  }
+}

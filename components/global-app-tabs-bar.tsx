@@ -2172,6 +2172,8 @@ export function GlobalAppTabsBar() {
                     key={row.id}
                     type="button"
                     onMouseDown={handleAuxButtonMouseDown}
+                    // (Right-clicked: it lifts as its menu opens, the rest darkened — components/context-lift.tsx.)
+                    data-context-lift="true"
                     onContextMenu={(event) => {
                       event.preventDefault();
                       endNotifLongPress();

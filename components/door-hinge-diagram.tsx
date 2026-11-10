@@ -201,6 +201,23 @@ export function DoorHingeMeasured({
             <text x={door.x + w / 2} y={y0 + h / 2} fontSize={font} fontWeight={500} fill={ink} textAnchor="middle" dominantBaseline="central">
               Front
             </text>
+            {/* Its sizes inside it, each along its own side: the width along the bottom, the height up the side away
+                from the hinges (turned to read along it). */}
+            {(() => {
+              const inset = 6;
+              const heightX = door.edge === "right" ? door.x + inset + font * 0.72 : door.x + w - inset;
+              const middle = y0 + h / 2;
+              return (
+                <>
+                  <text x={door.x + w / 2} y={y0 + h - inset} fontSize={font} fontWeight={500} fill={ink} textAnchor="middle">
+                    {doorW}
+                  </text>
+                  <text x={heightX} y={middle} fontSize={font} fontWeight={500} fill={ink} textAnchor="middle" transform={`rotate(-90 ${heightX} ${middle})`}>
+                    {doorH}
+                  </text>
+                </>
+              );
+            })()}
             {marks.map((mark, markIndex) => {
               const off = mark.value > length;
               const along = Math.min(mark.value, length) * perMmAlong;
@@ -248,9 +265,13 @@ export function DoorHingeMeasured({
           </g>
         ))}
       </svg>
-      <p className="whitespace-nowrap text-[12px] font-medium" style={{ color: soft }}>
-        {caption}
-      </p>
+      {/* (Its sizes are on the door itself, and its side shows by where the hinges are: underneath, only a door with no
+          side picked yet says so — in the pop-up, in the drawing's own ink.) */}
+      {side ? null : (
+        <p className="whitespace-nowrap text-[12px] font-medium" style={{ color: large ? ink : soft }}>
+          No hinge side picked yet
+        </p>
+      )}
     </div>
   );
 }

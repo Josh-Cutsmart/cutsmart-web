@@ -2453,3 +2453,51 @@ body[data-theme="dark"] .cs-skeleton {
     background-image: none;
   }
 }
+
+/* Right-clicked (components/context-lift.tsx): the rest of the app darkened (one sheet over it all) and what was
+   right-clicked magnified over it — a copy, bigger, with a shadow under it as if it's lifted off the page, growing out of
+   its own size — the menu over both. Fading back as the menu goes. */
+.context-lift-sheet {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: rgba(15, 23, 42, 0.2);
+  animation: context-lift-fade 200ms ease-out;
+  transition: opacity 220ms ease;
+}
+.context-lift-copy {
+  position: fixed;
+  overflow: hidden;
+  pointer-events: none;
+  transform-origin: 50% 50%;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.22), 0 2px 6px rgba(15, 23, 42, 0.12);
+  animation: context-lift-grow 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  /* (Letting go: slid back down to its own size, then gone.) */
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 90ms ease 170ms;
+}
+/* (Letting go part-way through coming up: the coming up stops where it is and slides back down from there.) */
+.context-lift-sheet[data-leaving="true"],
+.context-lift-copy[data-leaving="true"] {
+  opacity: 0;
+  animation: none;
+}
+.context-lift-copy[data-leaving="true"] {
+  transform: scale(var(--lift-from, 1));
+}
+@keyframes context-lift-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes context-lift-grow {
+  from {
+    transform: scale(var(--lift-from, 1));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .context-lift-sheet,
+  .context-lift-copy {
+    animation: none;
+    transition: none;
+  }
+}

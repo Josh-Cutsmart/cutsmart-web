@@ -12,8 +12,14 @@ whatsNew: [
 <u><b>Projects</b></u>
 <ul>
 <li>Calmer scroll bars in the project's drop-down menus</li>
-<li>Double tap any part in the CNC Cutlist to go straight to it in the Production Cutlist, its table opened if it was collapsed</li>
-<li>In the CNC Cutlist, linked drawer fronts sit together in one green box</li>
+<li>Edit piece: double click a part in the CNC Cutlist, or right-click it there or in Nesting, to change it in its own pop-up. It looks like its row in the Cutlist List with every field ready to change, and saving it updates the part everywhere</li>
+<li>The CNC Cutlist has a right-click menu: Edit piece, Show in the Production Cutlist, Change grain direction and Copy size</li>
+<li>Right-clicking a row or card anywhere in the app lifts it a little and dims everything else while its menu is open. Clicking away from a right-click menu just closes it, without opening what you clicked on</li>
+<li>Nesting's right-click menu can change a piece's grain direction. It only turns if the piece still fits its sheet that way, otherwise a yellow note says why</li>
+<li>In the Cutlist List and the CNC Cutlist, linked drawer fronts sit together in one green box</li>
+<li>Changing the part type of one linked drawer front changes the whole bank with it, so its fronts stay together</li>
+<li>Cutlist Entry: a cabinet's Drilled dropdown is the same size as the other dropdowns</li>
+<li>A door's hinge drawing in the Cutlist List now grows when you point at it, as it does in the Cutlist Entry, opening out like a menu. Click it and it grows into a big view in the middle of the screen, with the part's name at the top and each door's sizes along its sides</li>
 </ul>
 
 <u><b>Dashboard and Leads</b></u>
@@ -43,7 +49,7 @@ whatsNew: [
 <li>Every search box works the same way: the same X to clear it, in the same place, and the same look while you're using it. On phones, Contacts' search opens and closes like the Dashboard's</li>
 <li>Notifications: a select button to pick several at once, then mark them read or unread, or clear them</li>
 <li>Mobile numbers are spaced out as you type them, everywhere you can enter one: 021 066 4812, or 6421 066 4812 with the country code</li>
-<li>Calendar: swiping an event away while editing it saves it</li>
+<li>Calendar: closing an event you're editing saves it, whether you swipe it away, press its X or click off it. A new event only closes with its X, and if you've filled anything in it checks first that you're happy for it not to be saved</li>
 <li>When several event reminders come as one notification, each event is listed without its project, so they're quicker to read</li>
 <li>The side menu's sections slide up and down as they fold and open</li>
 <li>The computer's side menu uses the same colours as the phone's</li>

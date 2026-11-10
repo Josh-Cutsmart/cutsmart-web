@@ -41,9 +41,13 @@ service cloud.firestore {
       ]);
     }
 
-    function onlyUserColorFieldsOnUpdate() {
-      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
-        'userColor', 'updatedAt', 'updatedAtIso'
+    // Your own membership: only what you set about yourself — your name, mobile, badge colour and which What's New
+    // you've seen. Never your role, permissions or email: the server reads those to decide what you can do.
+    // affectedKeys, not changedKeys: changedKeys misses fields that are added or removed, which let a member add
+    // permissions to their own membership, or remove their role and add it back as "owner".
+    function onlyOwnMembershipFieldsOnUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'displayName', 'mobile', 'userColor', 'badgeColor', 'updateNoticeSeenVersions', 'updatedAt', 'updatedAtIso'
       ]);
     }
 
@@ -164,8 +168,8 @@ service cloud.firestore {
         // choose it.
         allow create: if false;
 
-        // keep your existing color-only self update rule
-        allow update: if isSelf(uid) && onlyUserColorFieldsOnUpdate();
+        // Your own: only your name, mobile, badge colour and What's New (onlyOwnMembershipFieldsOnUpdate).
+        allow update: if isSelf(uid) && onlyOwnMembershipFieldsOnUpdate();
         allow delete: if false;
       }
 
@@ -294,7 +298,9 @@ service cloud.firestore {
     }
     match /projects/{projectId} {
       allow read: if signedIn() && (resource == null || canUseLegacyProject(resource.data));
-      allow create: if canUseLegacyProject(request.resource.data);
+      // No new projects are made here any more (they all live in companies/{companyId}/jobs, and none are left here).
+      // Making one could take over a client's link to another company's project.
+      allow create: if false;
       allow update, delete: if canUseLegacyProject(resource.data);
 
       // Same version-history subcollections as companies/{companyId}/jobs/{jobId} above, for

@@ -1105,6 +1105,8 @@ function CalendarPageContent() {
   const [saving, setSaving] = useState(false);
   const [modalError, setModalError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // A new event's X with something put in it: "Discard this event?" first (it won't be saved).
+  const [confirmDiscardNew, setConfirmDiscardNew] = useState(false);
   // The pop-up and the events as they are now — for an Undo pressed after they've moved on.
   const draftRef = useRef(draft);
   const eventsRef = useRef(events);
@@ -1217,14 +1219,13 @@ function CalendarPageContent() {
     setRenderedDraft(next);
     setPopupOpenedAtMs(nowMs());
   };
-  const closeModal = () => setDraft(null);
-  // A new event (New event or Duplicate) that's been filled in or changed since it opened (a project search typed
-  // counts too): clicking off it, or Escape, doesn't close it then — only its X or Cancel — so nothing typed is lost
-  // by accident. Changed back to how it opened, it closes on a click off again.
-  const newDraftEdited = Boolean(draft?.isNew && newDraftStart && (projectQuery.trim() !== "" || draftsDiffer(draft, newDraftStart)));
-  const closeModalUnlessEdited = () => {
-    if (!newDraftEdited) closeModal();
+  const closeModal = () => {
+    setConfirmDiscardNew(false);
+    setDraft(null);
   };
+  // A new event (New event or Duplicate) that's been filled in or changed since it opened (a project search typed
+  // counts too): its X asks first (closeEventPopup). Changed back to how it opened, it closes without asking.
+  const newDraftEdited = Boolean(draft?.isNew && newDraftStart && (projectQuery.trim() !== "" || draftsDiffer(draft, newDraftStart)));
 
   // /calendar?event=<id> (a calendar reminder notification, or the bell's entry for one): go to that
   // event's day and open it, then tidy the address so a reload doesn't open it again.
@@ -1324,6 +1325,26 @@ function CalendarPageContent() {
       setModalError(result.error === "permission-denied" ? "You don't have permission to save events." : "Couldn't save — try again.");
     });
   };
+  // Its X (and Escape): an event already there saved as it closes, as swiping it away does (swipeAwayDraft — unchanged, it
+  // just closes; one that can't be saved stays open saying why); a new one closed, after "Discard this event?" if
+  // anything's been put in it.
+  const closeEventPopup = () => {
+    if (draft?.isNew) {
+      if (newDraftEdited) setConfirmDiscardNew(true);
+      else closeModal();
+      return;
+    }
+    swipeAwayDraft();
+  };
+  // Clicked off it (round it, or above a phone's): an event already there saved and closed, as its X; a new one closed
+  // if nothing's been put in it yet — otherwise left open, only its X closing it.
+  const clickOffEventPopup = () => {
+    if (draft?.isNew) {
+      if (!newDraftEdited) closeModal();
+      return;
+    }
+    swipeAwayDraft();
+  };
   // The event pop-up's … > Duplicate: a new event with this one's details — title, times, location, notes,
   // project — but no category (they choose one), opened ready to add.
   const duplicateDraft = () => {
@@ -1373,14 +1394,23 @@ function CalendarPageContent() {
       if (!ok) throw new Error("couldn't restore the event");
     });
   };
+  // Escape: as its X (closeEventPopup) — or, with "Discard this event?" up, back to the event. (The newest of them, by a
+  // ref kept up to date after each render.)
+  const escapeEventPopupRef = useRef<() => void>(() => undefined);
+  useEffect(() => {
+    escapeEventPopupRef.current = () => {
+      if (confirmDiscardNew) setConfirmDiscardNew(false);
+      else closeEventPopup();
+    };
+  });
   useEffect(() => {
     if (!draft) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !newDraftEdited && !document.querySelector('[data-glass-dropdown-menu="true"]')) setDraft(null);
+      if (e.key === "Escape" && !document.querySelector('[data-glass-dropdown-menu="true"]')) escapeEventPopupRef.current();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [draft, newDraftEdited]);
+  }, [draft]);
 
   // Moving an event to new times (drag in any view).
   const moveEvent = async (event: CalendarEvent, startMs: number, endMs: number) => {
@@ -3178,14 +3208,15 @@ function CalendarPageContent() {
   // The title's suggestions' Show all: every other project, under them.
   const titleSuggestOthers = titleSuggestions.length ? unarchivedProjects.filter((p) => !titleSuggestions.some((m) => m.project === p)) : [];
   const titleSuggestShowAll = Boolean(d && titleSuggestShowAllFor === d.id);
-  // The event view's "…" menu: Duplicate (not for an event whose project they can't open — its details are
-  // hidden) and Delete Event (asks first, in the bottom bar).
+  // The event view's "…" menu: Edit (as its Edit button), Duplicate (not for an event whose project they can't open —
+  // its details are hidden) and Delete (asks first, in the bottom bar).
   const eventMenuItems: GlassActionMenuItem[] =
     d && !d.isNew
       ? [
+          ...(!readOnly ? [{ key: "edit", label: "Edit", icon: <Pencil size={14} />, onSelect: () => setEventMode("edit") }] : []),
           ...(canCreate && !restrictedIds.has(d.id) ? [{ key: "duplicate", label: "Duplicate", icon: <Copy size={14} />, onSelect: duplicateDraft }] : []),
           ...(!readOnly
-            ? [{ key: "delete", label: "Delete Event", icon: <Trash2 size={14} />, danger: true, onSelect: () => setConfirmDelete(true) }]
+            ? [{ key: "delete", label: "Delete", icon: <Trash2 size={14} />, danger: true, onSelect: () => setConfirmDelete(true) }]
             : []),
         ]
       : [];
@@ -3641,7 +3672,9 @@ function CalendarPageContent() {
               // .glass-modal-panel's job (app/globals.css), the same as every other pop-up — in either spot.
               className={`fixed inset-0 z-[1700] flex justify-center px-3 py-3 md:items-center md:px-4 md:py-4 ${d.isNew ? "items-start" : "items-center"}`}
             >
-              <button type="button" aria-label="Close" onClick={closeModalUnlessEdited} className="glass-modal-backdrop absolute inset-0" />
+              {/* (Clicked off: an event already there saved and closed; a new one closed only while it's untouched —
+                  clickOffEventPopup.) */}
+              <button type="button" aria-label="Close" onClick={clickOffEventPopup} className="glass-modal-backdrop absolute inset-0" />
               <div
                 ref={modalPanelRef}
                 className="glass-modal-panel relative z-[1701] flex max-h-full w-full max-w-[560px] flex-col overflow-hidden md:max-h-[calc(100svh-32px)]"
@@ -3691,7 +3724,7 @@ function CalendarPageContent() {
                             <MoreHorizontal size={16} />
                           </GlassActionMenu>
                         ) : null}
-                        <button type="button" onClick={closeModal} className={modalCloseButtonClass} aria-label="Close">
+                        <button type="button" onClick={closeEventPopup} className={modalCloseButtonClass} aria-label="Close">
                           <X size={16} />
                         </button>
                       </div>
@@ -3851,7 +3884,7 @@ function CalendarPageContent() {
                 <GlassModalHeader
                   title={d.isNew ? "New event" : readOnly ? "Event" : "Edit event"}
                   icon={<span className="block h-3.5 w-3.5 rounded-full transition-colors" style={{ backgroundColor: draftCategory.color }} />}
-                  onClose={closeModal}
+                  onClose={closeEventPopup}
                 />
                 {/* What swiping it away does while it's being edited: saves as it closes (swipeAwayDraft). Not shown — the
                     swipe presses it. */}
@@ -4366,6 +4399,38 @@ function CalendarPageContent() {
                 </>
                 )}
               </div>
+              {/* A new event's X with something put in it: "Discard this event?" — it won't be saved. Clicked off (or
+                  Escape): back to the event. */}
+              {confirmDiscardNew ? (
+                <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4">
+                  <button type="button" aria-label="Keep editing" onClick={() => setConfirmDiscardNew(false)} className="glass-modal-backdrop absolute inset-0" />
+                  <div role="alertdialog" aria-modal="true" aria-label="Discard this event?" className="glass-modal-panel relative w-full max-w-[360px] p-5">
+                    <p className="text-[15px] font-semibold" style={{ color: "var(--text-main)" }}>
+                      Discard this event?
+                    </p>
+                    <p className="mt-1.5 text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>
+                      It hasn&apos;t been added yet, so what you&apos;ve put in won&apos;t be saved.
+                    </p>
+                    <div className="mt-4 flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDiscardNew(false)}
+                        className="glass-shine glass-shine-neutral inline-flex h-9 shrink-0 items-center justify-center rounded-full px-4 text-[12.5px] font-semibold text-[var(--text-main)] transition hover:brightness-105"
+                      >
+                        Keep editing
+                      </button>
+                      <button
+                        type="button"
+                        onClick={closeModal}
+                        className="glass-shine inline-flex h-9 shrink-0 items-center justify-center rounded-full px-4 text-[12.5px] font-semibold text-white transition hover:brightness-105"
+                        style={glassShineStyle("var(--danger)")}
+                      >
+                        Discard
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
             </div>,
             document.body,
           )
