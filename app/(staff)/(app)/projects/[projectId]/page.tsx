@@ -10,7 +10,7 @@ import { haptic } from "@/lib/haptics";
 import { createPortal, flushSync } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, Box, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, CloudCheck, CloudOff, CloudUpload, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, EyeOff, File as FileIcon, FileSpreadsheet, FileUp, FileText, FolderSearch, GitBranch, Eraser, GripVertical, HardHat, History as HistoryIcon, Image as ImageIcon, ImagePlus, Import as ImportIcon, Inbox, Info, Layers, Link2, ListChecks, Lock, Mail, MapPin, Maximize2, Minimize2, Minus, Package, PanelRightClose, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, QrCode, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, BadgePercent, Box, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, CloudCheck, CloudOff, CloudUpload, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, EyeOff, File as FileIcon, FileSpreadsheet, FileUp, FileText, FolderSearch, GitBranch, Eraser, GripVertical, HardHat, History as HistoryIcon, Image as ImageIcon, ImagePlus, Import as ImportIcon, Inbox, Info, Layers, Link2, ListChecks, Lock, Mail, MapPin, Maximize2, Minimize2, Minus, Package, PanelRightClose, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, QrCode, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
 import type { DecoupledEditor, ModelWriter } from "ckeditor5";
 import type { RichText as ExcelRichText } from "exceljs";
 import type JSZip from "jszip";
@@ -28,6 +28,17 @@ import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { InitialMeasureCloseSummaryModal } from "@/components/initial-measure-close-summary-modal";
 import { ProductionCutlistCloseSummaryModal } from "@/components/production-cutlist-close-summary-modal";
 import { ProductionUnlockCountdown } from "@/components/production-unlock-countdown";
+import { QuoteDiscountAnswerBox, QuoteDiscountPrompt } from "@/components/quote-discount-box";
+import {
+  QUOTE_DISCOUNT_ACCEPT_PERMISSION,
+  QUOTE_DISCOUNT_CHANGED_EVENT,
+  QUOTE_DISCOUNT_PERMISSION,
+  normalizeQuoteDiscount,
+  quoteDiscountFigures,
+  type QuoteDiscount,
+  type QuoteDiscountChangedDetail,
+  type QuoteDiscountMode,
+} from "@/lib/quote-discount";
 import { ProjectPermissionsBoard } from "@/components/project-permissions-board";
 import { notifyProjectPermissionChange, projectPermissionChangeText, projectPermissionRows, projectSettingsWithPermission, type ProjectAccessValue } from "@/lib/project-permissions";
 import { ProtectedRoute } from "@/components/protected-route";
@@ -99,6 +110,7 @@ import {
   fetchCutlists,
   fetchGridVersion,
   fetchGridVersions,
+  fetchProjectQuoteDiscount,
   fetchProductComparisons,
   fetchProjectById,
   fetchProjectUpdatedAtMarker,
@@ -18464,15 +18476,32 @@ export default function ProjectDetailsPage() {
   const salesGstLabel = `GST (${Number(salesGstPercent.toFixed(2))}%)`;
   // Under the Design tab's Project Cost and room Total: whether those totals include GST.
   const salesGstTotalNote = salesGstPercent > 0 ? "incl GST" : "excl GST";
-  const displayedSalesQuoteTotalBeforeGst = useMemo(() => {
+  // Before GST and before the project's own agreed discount (below) — the company's discount bands taken off, if it does.
+  const displayedSalesQuoteTotalBeforeAgreedDiscount = useMemo(() => {
     if (!salesMinusOffQuoteTotalEnabled) return displayedSalesQuoteGrandTotal;
     return Math.max(0, displayedSalesQuoteGrandTotal - parseCurrencyNumber(displayedSalesQuoteDiscountTotal));
   }, [displayedSalesQuoteDiscountTotal, displayedSalesQuoteGrandTotal, salesMinusOffQuoteTotalEnabled]);
-  const displayedSalesQuoteGstTotal = useMemo(
-    () => Math.round(displayedSalesQuoteTotalBeforeGst * salesGstPercent) / 100,
-    [displayedSalesQuoteTotalBeforeGst, salesGstPercent],
-  );
-  const displayedSalesQuoteFinalTotal = displayedSalesQuoteTotalBeforeGst + displayedSalesQuoteGstTotal;
+  // The quote's discount (lib/quote-discount.ts) — asked for, countered, or agreed. Only an agreed one comes off: the
+  // amount agreed, off the total with GST — exactly that while GST is as it was then (so the new total is exactly what was
+  // agreed), otherwise its before-GST part with today's GST. The same amount however the quote changes afterwards.
+  const projectQuoteDiscount = project?.quoteDiscount ?? null;
+  const agreedQuoteDiscountOffTotal = useMemo(() => {
+    if (projectQuoteDiscount?.status !== "approved") return 0;
+    if (Math.abs(projectQuoteDiscount.gstPercent - salesGstPercent) < 1e-6) return projectQuoteDiscount.amountOff;
+    return Math.round(projectQuoteDiscount.amountOffBeforeGst * (100 + salesGstPercent)) / 100;
+  }, [projectQuoteDiscount, salesGstPercent]);
+  const displayedSalesQuoteTotalWithoutAgreedDiscount =
+    displayedSalesQuoteTotalBeforeAgreedDiscount + Math.round(displayedSalesQuoteTotalBeforeAgreedDiscount * salesGstPercent) / 100;
+  const displayedSalesQuoteFinalTotal = Math.max(0, displayedSalesQuoteTotalWithoutAgreedDiscount - agreedQuoteDiscountOffTotal);
+  // GST: on the total before GST — or, with an agreed discount, the GST part of the new total.
+  const displayedSalesQuoteGstTotal = useMemo(() => {
+    if (salesGstPercent <= 0) return 0;
+    if (agreedQuoteDiscountOffTotal <= 0) return Math.round(displayedSalesQuoteTotalBeforeAgreedDiscount * salesGstPercent) / 100;
+    return Math.round((displayedSalesQuoteFinalTotal - displayedSalesQuoteFinalTotal / (1 + salesGstPercent / 100)) * 100) / 100;
+  }, [agreedQuoteDiscountOffTotal, displayedSalesQuoteFinalTotal, displayedSalesQuoteTotalBeforeAgreedDiscount, salesGstPercent]);
+  // The agreed discount as it comes off before GST (the cost breakdown's line, beside its GST).
+  const agreedQuoteDiscountBeforeGst =
+    agreedQuoteDiscountOffTotal > 0 ? Math.max(0, displayedSalesQuoteTotalBeforeAgreedDiscount - (displayedSalesQuoteFinalTotal - displayedSalesQuoteGstTotal)) : 0;
   // Mirrored into a ref so the Quote grid's own outdated-detection (leaveQuoteGridWindow / the
   // staleness effect further down) can read its LATEST value at the moment it actually needs it —
   // without listing it as a reactive effect dependency, which would re-run that staleness check
@@ -18613,6 +18642,8 @@ export default function ProjectDetailsPage() {
       total_price: formatCurrencyValue(displayedSalesQuoteFinalTotal),
       quote_total: formatCurrencyValue(displayedSalesQuoteFinalTotal),
       discount_total: displayedSalesQuoteDiscountTotal,
+      // The project's own agreed discount (Request / Add Discount), as it comes off the total.
+      project_discount: formatCurrencyValue(agreedQuoteDiscountOffTotal),
       incl_gst: "(inc. G.S.T.)",
       project_notes: stripHtmlToPlainText(project?.notes),
       included_rooms: includedSalesRoomsForQuote.map((row) => row.name).join(", "),
@@ -18620,7 +18651,7 @@ export default function ProjectDetailsPage() {
       selected_products: selectedSalesProductNames.join(", "),
       product_count: String(selectedSalesProductNames.length),
     };
-  }, [assignedDisplayName, companyDoc, creatorDisplayName, displayedSalesQuoteDiscountTotal, displayedSalesQuoteFinalTotal, includedSalesRoomsForQuote, project, projectAssignedMember, projectCreatorMember, selectedSalesProductNames]);
+  }, [agreedQuoteDiscountOffTotal, assignedDisplayName, companyDoc, creatorDisplayName, displayedSalesQuoteDiscountTotal, displayedSalesQuoteFinalTotal, includedSalesRoomsForQuote, project, projectAssignedMember, projectCreatorMember, selectedSalesProductNames]);
   const effectiveQuoteTemplateReplacements = quoteTemplateReplacements;
   const persistSalesPatch = async (nextSalesRaw: Record<string, unknown>) => {
     const activeProject = projectRef.current ?? project;
@@ -38759,6 +38790,265 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       setIsReopeningQuoteAcceptance(false);
     }
   };
+  // ===== The quote's discount (lib/quote-discount.ts) — everything goes through the server (app/api/quote-discount), and
+  // it's only ever between staff. Request Discount (staff on their own project) or Add Discount (sales.discount) in the
+  // quote's bottom bar; the discount's card at the top of Quote Extras, to answer it there (sales.discount.accept, or the
+  // owner; who asked, for a counter offer) or take it off. Agreed: the sent quote comes off the client portal (the server
+  // does it), and the quote's total is the new one everywhere it's shown (displayedSalesQuoteFinalTotal).
+  const isCompanyOwnerRole = String(effectiveRole || "").trim().toLowerCase() === "owner";
+  const discountActionsOpen = Boolean(project) && isUserVerified && !isProjectArchived(project);
+  const canAddQuoteDiscount = discountActionsOpen && (isCompanyOwnerRole || hasPermissionKey(effectivePermissions, QUOTE_DISCOUNT_PERMISSION));
+  const canAnswerQuoteDiscount = discountActionsOpen && (isCompanyOwnerRole || hasPermissionKey(effectivePermissions, QUOTE_DISCOUNT_ACCEPT_PERMISSION));
+  const isOwnProjectForDiscount = Boolean(
+    user?.uid &&
+      (String(project?.createdByUid ?? "").trim() === user.uid ||
+        String(project?.assignedToUid ?? "").trim() === user.uid ||
+        currentUserDirectProjectAccessForTempAccess === "edit"),
+  );
+  const canRequestQuoteDiscount = discountActionsOpen && salesAccess.view && isOwnProjectForDiscount;
+  const isQuoteDiscountRequester = Boolean(user?.uid && projectQuoteDiscount?.requestedByUid === user.uid);
+  const canRemoveQuoteDiscount = isQuoteDiscountRequester || canAddQuoteDiscount || canAnswerQuoteDiscount || canRequestQuoteDiscount;
+  const [quoteDiscountPrompt, setQuoteDiscountPrompt] = useState<{ kind: "request" | "add"; sending: boolean; error: string } | null>(null);
+  const [quoteDiscountBox, setQuoteDiscountBox] = useState<{ stage: "request" | "counter"; answering?: "approve" | "deny" | "counter"; error: string } | null>(null);
+  const [isRemovingQuoteDiscount, setIsRemovingQuoteDiscount] = useState(false);
+  const [quoteDiscountCardError, setQuoteDiscountCardError] = useState("");
+  const quoteDiscountErrorText = (error: unknown) => {
+    switch (String(error ?? "")) {
+      case "discount-exists":
+        return "There's already a discount on this quote.";
+      case "quote-accepted":
+        return "The client has already accepted this quote.";
+      case "forbidden":
+        return "You can't do that on this project.";
+      case "bad-discount":
+        return "That discount doesn't work — it has to take something off, and less than the whole total.";
+      default:
+        return "Couldn't do that. Check your connection and try again.";
+    }
+  };
+  // What happened: the discount as it is now — and, once the quote came off the client portal, that too (as Reopen Edit's).
+  const applyQuoteDiscountResult = (discount: QuoteDiscount | null, retracted?: boolean) => {
+    setProject((prev) => (prev ? { ...prev, quoteDiscount: discount ?? undefined } : prev));
+    if (!retracted) return;
+    setSpecsShareStatus((prev) =>
+      prev
+        ? { ...prev, quoteVersionId: null, quoteAcceptedAt: null, quoteAcceptedByName: null, quoteDeclinedAt: null, quoteDeclinedByName: null, quoteDeclineReason: null, quoteSentFromLive: null }
+        : prev,
+    );
+    const current = projectRef.current ?? project;
+    if (current) void fetchGridVersions(current, "quoteGridVersions").then(setQuoteGridVersions);
+    setQuoteGridEditorKey((prev) => prev + 1);
+  };
+  const postQuoteDiscount = async (payload: Record<string, unknown>) => {
+    const current = projectRef.current ?? project;
+    try {
+      const response = await authorizedFetch("/api/quote-discount", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: current?.companyId, projectId: current?.id, ...payload }),
+      });
+      const json = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        error?: string;
+        discount?: unknown;
+        retracted?: boolean;
+        alreadyAnswered?: boolean;
+      } | null;
+      return { ok: response.ok && Boolean(json?.ok), json };
+    } catch {
+      return { ok: false, json: null };
+    }
+  };
+  // The Preview has no server: it's kept in the Preview's own made-up data (nobody's notified).
+  const setPreviewQuoteDiscount = (next: QuoteDiscount | null) => {
+    setProject((prev) => (prev ? { ...prev, quoteDiscount: next ?? undefined } : prev));
+    const current = projectRef.current ?? project;
+    if (current) void updateProjectPatch(current, { quoteDiscount: next ? JSON.parse(JSON.stringify(next)) : null });
+  };
+  const submitQuoteDiscountPrompt = async (mode: QuoteDiscountMode, value: string) => {
+    const prompt = quoteDiscountPrompt;
+    if (!project || !prompt || prompt.sending) return;
+    const figures = quoteDiscountFigures(displayedSalesQuoteFinalTotal, salesGstPercent, mode, value);
+    if (!figures) return;
+    if (isPreviewMode()) {
+      const nowIso = new Date().toISOString();
+      const uid = user?.uid || "";
+      const name = user?.displayName || "You";
+      const base = { ...figures, requestId: nowIso, requestedByUid: uid, requestedByName: name, requestedAtIso: nowIso };
+      setPreviewQuoteDiscount(
+        prompt.kind === "add"
+          ? { ...base, status: "approved", direct: true, approvedByUid: uid, approvedByName: name, approvedAtIso: nowIso }
+          : { ...base, status: "pending" },
+      );
+      setQuoteDiscountPrompt(null);
+      return;
+    }
+    setQuoteDiscountPrompt((prev) => (prev ? { ...prev, sending: true, error: "" } : prev));
+    const { ok, json } = await postQuoteDiscount({
+      action: prompt.kind,
+      mode,
+      value,
+      originalTotal: displayedSalesQuoteFinalTotal,
+      gstPercent: salesGstPercent,
+    });
+    if (!ok) {
+      setQuoteDiscountPrompt((prev) => (prev ? { ...prev, sending: false, error: quoteDiscountErrorText(json?.error) } : prev));
+      return;
+    }
+    applyQuoteDiscountResult(normalizeQuoteDiscount(json?.discount), json?.retracted);
+    setQuoteDiscountPrompt(null);
+  };
+  const removeQuoteDiscount = async () => {
+    const discount = projectQuoteDiscount;
+    if (!project || !discount || isRemovingQuoteDiscount) return;
+    setQuoteDiscountCardError("");
+    if (isPreviewMode()) {
+      setPreviewQuoteDiscount(null);
+      return;
+    }
+    setIsRemovingQuoteDiscount(true);
+    const { ok, json } = await postQuoteDiscount({ action: "remove", requestId: discount.requestId });
+    setIsRemovingQuoteDiscount(false);
+    if (!ok) {
+      setQuoteDiscountCardError(quoteDiscountErrorText(json?.error));
+      return;
+    }
+    applyQuoteDiscountResult(null);
+  };
+  // Answering it from its card: a request (accept, decline, or decline with a counter offer), or a counter offer.
+  const answerQuoteDiscount = async (decision: "approve" | "deny", counter?: { mode: QuoteDiscountMode; value: string }) => {
+    const box = quoteDiscountBox;
+    const discount = projectQuoteDiscount;
+    if (!project || !box || !discount || box.answering) return;
+    const answering = counter ? "counter" : decision;
+    if (isPreviewMode()) {
+      const nowIso = new Date().toISOString();
+      const name = user?.displayName || "You";
+      const counterFigures = counter ? quoteDiscountFigures(discount.originalTotal, discount.gstPercent, counter.mode, counter.value) : null;
+      if (decision === "approve") {
+        const c = box.stage === "counter" ? discount.counter : undefined;
+        setPreviewQuoteDiscount(
+          c
+            ? {
+                ...discount,
+                mode: c.mode,
+                percent: c.percent,
+                originalTotal: c.originalTotal,
+                amountOff: c.amountOff,
+                newTotal: c.newTotal,
+                amountOffBeforeGst: c.amountOffBeforeGst,
+                gstPercent: c.gstPercent,
+                counter: undefined,
+                status: "approved",
+                approvedByUid: c.byUid,
+                approvedByName: c.byName,
+                approvedAtIso: nowIso,
+              }
+            : { ...discount, status: "approved", approvedByUid: user?.uid || "", approvedByName: name, approvedAtIso: nowIso },
+        );
+      } else if (counterFigures) {
+        setPreviewQuoteDiscount({ ...discount, status: "countered", counter: { ...counterFigures, byUid: user?.uid || "", byName: name, atIso: nowIso } });
+      } else {
+        setPreviewQuoteDiscount(null);
+      }
+      setQuoteDiscountBox(null);
+      return;
+    }
+    setQuoteDiscountBox((prev) => (prev ? { ...prev, answering, error: "" } : prev));
+    const { ok, json } = await postQuoteDiscount({
+      action: box.stage === "counter" ? "counter-answer" : "answer",
+      requestId: discount.requestId,
+      decision,
+      ...(counter ? { counter } : {}),
+    });
+    if (!ok) {
+      setQuoteDiscountBox((prev) => (prev ? { ...prev, answering: undefined, error: quoteDiscountErrorText(json?.error) } : prev));
+      return;
+    }
+    applyQuoteDiscountResult(normalizeQuoteDiscount(json?.discount), json?.retracted);
+    setQuoteDiscountBox(null);
+  };
+  // Changed elsewhere since this page loaded it (answered from someone's notifications): read again when this window
+  // comes back into view, every 30 seconds while one's waiting on an answer, and straight away when it's answered from
+  // the top bar's notifications here (QUOTE_DISCOUNT_CHANGED_EVENT). Agreed since: the client portal's changed too.
+  const refreshQuoteDiscount = async () => {
+    const current = projectRef.current ?? project;
+    if (!current || isPreviewMode()) return;
+    const latest = await fetchProjectQuoteDiscount(current);
+    if (latest === undefined) return;
+    const before = (projectRef.current ?? current).quoteDiscount ?? null;
+    if (JSON.stringify(before) === JSON.stringify(latest)) return;
+    setProject((prev) => (prev && prev.id === current.id ? { ...prev, quoteDiscount: latest ?? undefined } : prev));
+    if (latest?.status === "approved" && before?.status !== "approved") {
+      void fetchSpecsShareStatus();
+      void fetchGridVersions(current, "quoteGridVersions").then(setQuoteGridVersions);
+      setQuoteGridEditorKey((prev) => prev + 1);
+    }
+  };
+  const quoteDiscountHandlersRef = useRef({ refresh: refreshQuoteDiscount, apply: applyQuoteDiscountResult });
+  useEffect(() => {
+    quoteDiscountHandlersRef.current = { refresh: refreshQuoteDiscount, apply: applyQuoteDiscountResult };
+  });
+  const quoteDiscountProjectId = project?.id ?? "";
+  const isQuoteDiscountWaiting = projectQuoteDiscount?.status === "pending" || projectQuoteDiscount?.status === "countered";
+  useEffect(() => {
+    if (!quoteDiscountProjectId) return;
+    const refresh = () => {
+      if (document.visibilityState === "visible") void quoteDiscountHandlersRef.current.refresh();
+    };
+    const onChanged = (event: Event) => {
+      const detail = (event as CustomEvent<QuoteDiscountChangedDetail>).detail;
+      if (detail?.projectId === quoteDiscountProjectId) quoteDiscountHandlersRef.current.apply(detail.discount, detail.retracted);
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener(QUOTE_DISCOUNT_CHANGED_EVENT, onChanged);
+    const timer = isQuoteDiscountWaiting ? window.setInterval(refresh, 30000) : null;
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener(QUOTE_DISCOUNT_CHANGED_EVENT, onChanged);
+      if (timer) window.clearInterval(timer);
+    };
+  }, [quoteDiscountProjectId, isQuoteDiscountWaiting]);
+  // The prompt (Request / Add Discount) and the box to answer it — over the quote window.
+  const renderQuoteDiscountPopups = () => (
+    <>
+      {quoteDiscountPrompt ? (
+        <QuoteDiscountPrompt
+          kind={quoteDiscountPrompt.kind}
+          originalTotal={displayedSalesQuoteFinalTotal}
+          gstPercent={salesGstPercent}
+          sending={quoteDiscountPrompt.sending}
+          error={quoteDiscountPrompt.error}
+          onSubmit={(mode, value) => void submitQuoteDiscountPrompt(mode, value)}
+          onClose={() => setQuoteDiscountPrompt(null)}
+        />
+      ) : null}
+      {quoteDiscountBox && projectQuoteDiscount && (quoteDiscountBox.stage === "request" || projectQuoteDiscount.counter) ? (
+        (() => {
+          const figures = quoteDiscountBox.stage === "counter" && projectQuoteDiscount.counter ? projectQuoteDiscount.counter : projectQuoteDiscount;
+          return (
+            <QuoteDiscountAnswerBox
+              stage={quoteDiscountBox.stage}
+              personName={quoteDiscountBox.stage === "counter" ? projectQuoteDiscount.counter?.byName || "" : projectQuoteDiscount.requestedByName}
+              originalTotal={figures.originalTotal}
+              amountOff={figures.amountOff}
+              amountOffBeforeGst={figures.amountOffBeforeGst}
+              newTotal={figures.newTotal}
+              percent={figures.percent}
+              gstPercent={figures.gstPercent}
+              answering={quoteDiscountBox.answering}
+              error={quoteDiscountBox.error}
+              onAccept={() => void answerQuoteDiscount("approve")}
+              onDecline={(counter) => void answerQuoteDiscount("deny", counter)}
+              onClose={() => setQuoteDiscountBox(null)}
+            />
+          );
+        })()
+      ) : null}
+    </>
+  );
   // Explicit, deliberate reset (confirmed via its own popup) — this project's specs sheet otherwise
   // only ever clones from the company template ONCE, on its very first visit, then stays permanently
   // independent by design. That leaves no recourse if the very first clone happened to catch a bad or
@@ -39179,6 +39469,32 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   useEffect(() => {
     quoteGridLatestRef.current = quoteGrid;
   }, [quoteGrid]);
+  // A discount agreed (or taken off) while this project's open: the live quote's own total cell — and the other cells
+  // that came from the template's {{…}} — brought up to date straight away, as Save Version does, so the quote on screen
+  // (and anything sent from it) has the new total.
+  const refreshLiveQuoteForDiscountRef = useRef<() => void>(() => undefined);
+  useEffect(() => {
+    refreshLiveQuoteForDiscountRef.current = () => {
+      const live = quoteGridLatestRef.current;
+      if (!live) return;
+      const refreshed = refreshQuoteGridAgainstTemplate(live);
+      if (!refreshed || JSON.stringify(refreshed) === JSON.stringify(live)) return;
+      setQuoteGrid(refreshed);
+      quoteGridState.setGridOptimistic(refreshed);
+      quoteGridLatestRef.current = refreshed;
+      quoteGridState.keep(refreshed);
+      void quoteGridState.save(refreshed).then((ok) => setQuoteGridSaveError(ok ? "" : "save-failed"));
+    };
+  });
+  const lastAgreedDiscountRef = useRef<{ projectId: string; amount: number } | null>(null);
+  useEffect(() => {
+    const projectId = project?.id ?? "";
+    const previous = lastAgreedDiscountRef.current;
+    lastAgreedDiscountRef.current = { projectId, amount: agreedQuoteDiscountOffTotal };
+    // (Not as the project first loads, or another one opens — only a change to this one's.)
+    if (!previous || previous.projectId !== projectId || previous.amount === agreedQuoteDiscountOffTotal) return;
+    refreshLiveQuoteForDiscountRef.current();
+  }, [project?.id, agreedQuoteDiscountOffTotal]);
   useEffect(() => {
     const news = quoteGridState.remote;
     const here = quoteGridLatestRef.current;
@@ -42260,6 +42576,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     ...(displayedSalesQuoteCustomPriceTotal > 0 ? [{ label: "Custom Pricing", value: formatCurrencyValue(displayedSalesQuoteCustomPriceTotal) }] : []),
     ...(canSeeOperationalCost && displayedSalesExtraChargesTotal > 0 ? [{ label: "Operational Costs", value: formatCurrencyValue(displayedSalesExtraChargesTotal) }] : []),
     ...(projectCostDiscount > 0 ? [{ label: "Discount", value: `-${displayedSalesQuoteDiscountTotal}`, danger: true }] : []),
+    ...(agreedQuoteDiscountBeforeGst > 0 ? [{ label: "Agreed Discount", value: `-${formatCurrencyValue(agreedQuoteDiscountBeforeGst)}`, danger: true }] : []),
     ...(salesGstPercent > 0 ? [{ label: salesGstLabel, value: formatCurrencyValue(displayedSalesQuoteGstTotal) }] : []),
   ];
   const projectCostBreakdownModalPortal =
@@ -58322,6 +58639,90 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         )}
       </>
     );
+    // The quote's discount, at the top of Quote Extras: asked for (waiting for an answer — or, for one who can answer it,
+    // Answer), a counter offer (who asked: Answer), or agreed (what comes off, and the new total). Its X withdraws one
+    // still being worked out, or takes an agreed one off.
+    const quoteDiscountCard = projectQuoteDiscount
+      ? (() => {
+          const d = projectQuoteDiscount;
+          const agreed = d.status === "approved";
+          const shown = d.status === "countered" && d.counter ? d.counter : d;
+          const canAnswerHere = d.status === "pending" ? canAnswerQuoteDiscount && !isQuoteDiscountRequester : d.status === "countered" && isQuoteDiscountRequester;
+          const title = agreed ? "Discount" : d.status === "countered" ? "Counter offer" : "Discount requested";
+          const waitingText =
+            d.status === "pending"
+              ? `Waiting for approval${d.requestedByName ? ` · asked by ${d.requestedByName}` : ""}`
+              : d.status === "countered"
+                ? isQuoteDiscountRequester
+                  ? `${d.counter?.byName || "Someone"} offered this instead`
+                  : `Waiting for ${d.requestedByName || "them"} · offered by ${d.counter?.byName || "someone"}`
+                : d.direct
+                  ? `Added by ${d.approvedByName || d.requestedByName || "someone"}`
+                  : `Agreed by ${d.approvedByName || "someone"}`;
+          return (
+            <div
+              className="mb-3 rounded-[12px] border px-3 py-2.5"
+              style={{
+                borderColor: agreed ? "var(--success-strong)" : "var(--brand-strong)",
+                backgroundColor: agreed ? "var(--success-soft)" : "var(--brand-soft)",
+                ...(isQuoteExtrasPanelClosing
+                  ? { animation: "glass-bubble-slide-out-right 280ms ease both" }
+                  : isQuoteExtrasPanelJustOpened
+                    ? { animation: "glass-bubble-slide-in-right 480ms cubic-bezier(0.34, 1.56, 0.64, 1) both" }
+                    : {}),
+              }}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="inline-flex min-w-0 items-center gap-1.5" style={{ color: agreed ? "var(--success-strong)" : "var(--brand-strong)" }}>
+                  <BadgePercent size={14} className="shrink-0" />
+                  <span className="truncate text-[12px] font-semibold">{title}</span>
+                </span>
+                {canRemoveQuoteDiscount ? (
+                  <button
+                    type="button"
+                    disabled={isRemovingQuoteDiscount}
+                    onClick={() => void removeQuoteDiscount()}
+                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition hover:bg-[var(--danger-soft)] disabled:opacity-50"
+                    style={{ color: "var(--text-main)" }}
+                    aria-label={agreed ? "Remove discount" : "Withdraw discount request"}
+                    title={agreed ? "Remove discount" : isQuoteDiscountRequester ? "Withdraw request" : "Remove request"}
+                  >
+                    <X size={13} />
+                  </button>
+                ) : null}
+              </div>
+              <div className="mt-1.5 space-y-0.5 text-[12px] font-medium">
+                <div className="flex items-center justify-between gap-2" style={{ color: "var(--danger-strong)" }}>
+                  <span>Discount{salesGstPercent > 0 ? " (excl GST)" : ""}</span>
+                  <span className="tabular-nums">-{formatCurrencyValue(agreed ? agreedQuoteDiscountBeforeGst : shown.amountOffBeforeGst)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-2 font-semibold" style={{ color: "var(--text-main)" }}>
+                  <span>New total</span>
+                  <span className="tabular-nums">{formatCurrencyValue(agreed ? displayedSalesQuoteFinalTotal : shown.newTotal)}</span>
+                </div>
+              </div>
+              <p className="mt-1.5 text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
+                {waitingText}
+              </p>
+              {canAnswerHere ? (
+                <button
+                  type="button"
+                  onClick={() => setQuoteDiscountBox({ stage: d.status === "countered" ? "counter" : "request", error: "" })}
+                  className="glass-shine mt-2 inline-flex h-7 w-full items-center justify-center rounded-full px-3 text-[12px] font-medium text-white transition hover:brightness-105"
+                  style={glassShineStyle("var(--brand-strong)")}
+                >
+                  Answer
+                </button>
+              ) : null}
+              {quoteDiscountCardError ? (
+                <p role="alert" className="mt-1.5 text-[11px] font-medium" style={{ color: "var(--danger-strong)" }}>
+                  {quoteDiscountCardError}
+                </p>
+              ) : null}
+            </div>
+          );
+        })()
+      : null;
     const quoteFloatingActionButtons = (
       <>
         {/* Save/Reset both only ever act on the LIVE grid (never rendered while viewing a
@@ -58394,6 +58795,38 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           >
             <RotateCcw size={isCompactProjectViewport ? 16 : 14} />
             Reset
+          </button>
+        </FloatingBarSlot>
+        {/* Request Discount (staff on their own project) / Add Discount (sales.discount): on the live quote, while it has
+            no discount, until the client accepts it. */}
+        <FloatingBarSlot
+          visible={
+            !isViewingQuoteGridVersion &&
+            isSpecsShareStatusLoaded &&
+            !specsShareStatus?.quoteAcceptedAt &&
+            !projectQuoteDiscount &&
+            displayedSalesQuoteFinalTotal > 0 &&
+            (canAddQuoteDiscount || canRequestQuoteDiscount)
+          }
+          orientation={isCompactProjectViewport ? "vertical" : "horizontal"}
+          bounceStyle={mobileActionsButtonBounceStyle(isCompactProjectViewport, quoteMobileActionsSheet, "actions-discount")}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              quoteMobileActionsSheet.setIsOpen(false);
+              setQuoteDiscountPrompt({ kind: canAddQuoteDiscount ? "add" : "request", sending: false, error: "" });
+            }}
+            className={
+              isCompactProjectViewport
+                ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium transition hover:brightness-95"
+                : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-semibold hover:brightness-95"
+            }
+            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+            aria-label={canAddQuoteDiscount ? "Add Discount" : "Request Discount"}
+          >
+            <BadgePercent size={isCompactProjectViewport ? 16 : 14} />
+            {canAddQuoteDiscount ? "Add Discount" : "Request Discount"}
           </button>
         </FloatingBarSlot>
         {/* Available while viewing EITHER the live grid or a historical version — sending
@@ -58987,6 +59420,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             {(() => {
               const quoteExtrasListContent = (
                 <>
+                {quoteDiscountCard}
                 <div className="mb-3 flex items-center justify-between gap-2">
                   <button
                     type="button"
@@ -59020,11 +59454,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             // their own comment) — the category label pops in/out right alongside them
                             // instead of sitting there static while its own items animate.
                             ...(isQuoteExtrasPanelClosing
-                              ? { animation: "glass-bubble-slide-out-right 280ms ease both", animationDelay: "0ms" }
+                              ? { animation: "glass-bubble-slide-out-right 280ms ease both" }
                               : isQuoteExtrasPanelJustOpened
                                 ? {
-                                    animation: "glass-bubble-slide-in-right 480ms cubic-bezier(0.34, 1.56, 0.64, 1) both",
-                                    animationDelay: `${stableBubbleAnimationDelayMs(bucket.category)}ms`,
+                                    animation: `glass-bubble-slide-in-right 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs(bucket.category)}ms both`,
                                   }
                                 : {}),
                           }}
@@ -59049,11 +59482,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               // toggling an extra) renders every row in its resting state instantly,
                               // never replaying the pop-in just because a row got freshly mounted.
                               ...(isQuoteExtrasPanelClosing
-                                ? { animation: "glass-bubble-slide-out-right 280ms ease both", animationDelay: "0ms" }
+                                ? { animation: "glass-bubble-slide-out-right 280ms ease both" }
                                 : isQuoteExtrasPanelJustOpened
                                   ? {
-                                      animation: "glass-bubble-slide-in-right 480ms cubic-bezier(0.34, 1.56, 0.64, 1) both",
-                                      animationDelay: `${stableBubbleAnimationDelayMs(g.id)}ms`,
+                                      animation: `glass-bubble-slide-in-right 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs(g.id)}ms both`,
                                     }
                                   : {}),
                             }}
@@ -59293,9 +59725,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       // Same pop-in/out as every other bubble below (see their own comment) — leads
                       // the stagger at 0ms, since this always renders first.
                       ...(isQuoteHistoryPanelClosing
-                        ? { animation: "glass-bubble-slide-out-left 280ms ease both", animationDelay: "0ms" }
+                        ? { animation: "glass-bubble-slide-out-left 280ms ease both" }
                         : isQuoteHistoryPanelJustOpened
-                          ? { animation: "glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) both", animationDelay: "0ms" }
+                          ? { animation: "glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) both" }
                           : {}),
                     }}
                   >
@@ -59332,11 +59764,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           // an entry (which changes activeQuoteGridVersionId and re-renders this
                           // whole list) never replays every row's entrance.
                           ...(isQuoteHistoryPanelClosing
-                            ? { animation: "glass-bubble-slide-out-left 280ms ease both", animationDelay: "0ms" }
+                            ? { animation: "glass-bubble-slide-out-left 280ms ease both" }
                             : isQuoteHistoryPanelJustOpened
                               ? {
-                                  animation: "glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) both",
-                                  animationDelay: `${stableBubbleAnimationDelayMs(v.id)}ms`,
+                                  animation: `glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs(v.id)}ms both`,
                                 }
                               : {}),
                         }}
@@ -59549,6 +59980,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               );
             })()}
           </div>
+          {renderQuoteDiscountPopups()}
           {shouldRenderQuoteGridSaveVersionModal && typeof document !== "undefined"
             ? createPortal(
                 <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
@@ -60554,9 +60986,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     // Same pop-in/out as every other bubble below (see their own comment) — leads
                     // the stagger at 0ms, since this always renders first.
                     ...(isSpecsVersionsSidebarClosing
-                      ? { animation: "glass-bubble-slide-out-left 280ms ease both", animationDelay: "0ms" }
+                      ? { animation: "glass-bubble-slide-out-left 280ms ease both" }
                       : isSpecsVersionsSidebarJustOpened
-                        ? { animation: "glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) both", animationDelay: "0ms" }
+                        ? { animation: "glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) both" }
                         : {}),
                   }}
                 >
@@ -60585,11 +61017,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       onMouseLeave={() => setHoveredSpecsVersionId((prev) => (prev === v.id ? "" : prev))}
                       style={{
                         ...(isSpecsVersionsSidebarClosing
-                          ? { animation: "glass-bubble-slide-out-left 280ms ease both", animationDelay: "0ms" }
+                          ? { animation: "glass-bubble-slide-out-left 280ms ease both" }
                           : isSpecsVersionsSidebarJustOpened
                             ? {
-                                animation: "glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) both",
-                                animationDelay: `${stableBubbleAnimationDelayMs(v.id)}ms`,
+                                animation: `glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs(v.id)}ms both`,
                               }
                             : {}),
                       }}
@@ -60792,11 +61223,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         // Quote Extras' own identical row's comment for why.
                         backgroundColor: hoveredSpecsSectionGroupId === g.id || previewHoveredSpecsSectionGroupId === g.id ? "var(--brand-soft)" : "var(--panel-muted)",
                         ...(isSpecsSectionsPanelClosing
-                          ? { animation: "glass-bubble-slide-out-right 280ms ease both", animationDelay: "0ms" }
+                          ? { animation: "glass-bubble-slide-out-right 280ms ease both" }
                           : isSpecsSectionsPanelJustOpened
                             ? {
-                                animation: "glass-bubble-slide-in-right 480ms cubic-bezier(0.34, 1.56, 0.64, 1) both",
-                                animationDelay: `${stableBubbleAnimationDelayMs(g.id)}ms`,
+                                animation: `glass-bubble-slide-in-right 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs(g.id)}ms both`,
                               }
                             : {}),
                       }}
@@ -70226,8 +70656,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           boxShadow: "var(--shadow-glass)",
                           animation: projectImageViewerCommentsClosing
                             ? "glass-comment-drop-out 280ms ease both"
-                            : "glass-comment-drop-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) both",
-                          animationDelay: projectImageViewerCommentsClosing ? "0ms" : `${Math.round(Math.random() * 280)}ms`,
+                            : `glass-comment-drop-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${Math.round(Math.random() * 280)}ms both`,
                         }}
                         aria-label="Scroll comments left"
                       >
@@ -70308,8 +70737,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               transition: "background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease",
                               animation: projectImageViewerCommentsClosing
                                 ? "glass-comment-drop-out 280ms ease both"
-                                : "glass-comment-drop-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) both",
-                              animationDelay: projectImageViewerCommentsClosing ? "0ms" : `${Math.round(Math.random() * 280)}ms`,
+                                : `glass-comment-drop-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${Math.round(Math.random() * 280)}ms both`,
                               width:
                                 projectImageViewerListEditingAnnotation?.id === annotation.id && projectImageViewerListEditingAnnotation.width
                                   ? `${projectImageViewerListEditingAnnotation.width}px`
@@ -70533,8 +70961,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           boxShadow: "var(--shadow-glass)",
                           animation: projectImageViewerCommentsClosing
                             ? "glass-comment-drop-out 280ms ease both"
-                            : "glass-comment-drop-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) both",
-                          animationDelay: projectImageViewerCommentsClosing ? "0ms" : `${Math.round(Math.random() * 280)}ms`,
+                            : `glass-comment-drop-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${Math.round(Math.random() * 280)}ms both`,
                         }}
                         aria-label="Scroll comments right"
                       >

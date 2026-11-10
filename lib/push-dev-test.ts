@@ -24,6 +24,8 @@ export const DEV_TEST_ACTION_TOKEN = "dev-test";
 export const DEV_TEST_REQUESTER = TEAMMATE;
 export const DEV_TEST_UNLOCK_HOURS = 2;
 
+// A discount's figures, for its tests.
+const DISCOUNT_SAMPLE = { old_total: "$24,500.00", new_total: "$23,000.00", amount_off: "$1,500.00" };
 // [title, message] of each kind's test, as the real one words it.
 const asSample = ({ title, message }: { title: string; message: string }): [string, string] => [title, message];
 const SAMPLE_TEXT: Record<string, [string, string]> = {
@@ -35,6 +37,9 @@ const SAMPLE_TEXT: Record<string, [string, string]> = {
   production_unlock_response: asSample(
     notificationText("production_unlock_response.accepted", { person: TEAMMATE, project: PROJECT, hours: `${DEV_TEST_UNLOCK_HOURS} hours` }),
   ),
+  quote_discount_request: asSample(notificationText("quote_discount_request", { person: TEAMMATE, project: PROJECT, ...DISCOUNT_SAMPLE })),
+  quote_discount_counter: asSample(notificationText("quote_discount_counter", { person: TEAMMATE, project: PROJECT, ...DISCOUNT_SAMPLE })),
+  quote_discount_response: asSample(notificationText("quote_discount_response.approved", { person: TEAMMATE, project: PROJECT, ...DISCOUNT_SAMPLE })),
   lead_new: asSample(notificationText("lead_new.form", { name: CLIENT })),
   lead_access: asSample(notificationText("lead_access", { person: TEAMMATE, lead: CLIENT })),
   quote_accepted: asSample(notificationText("quote_accepted", { client: CLIENT, project: PROJECT, price: "$18,450.00" })),

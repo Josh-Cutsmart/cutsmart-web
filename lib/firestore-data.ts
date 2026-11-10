@@ -82,6 +82,7 @@ import type { ProductComparison } from "@/lib/cutlist-types";
 import type { ChecklistTemplate, Cutlist, Project, ProjectChange, ProjectChecklist, ProjectImageItem, SalesQuote } from "@/lib/types";
 import { normalizeWhatsNewHighlights, type UpdateChangelogEntry } from "@/lib/update-notes-utils";
 import { buildLeadRow } from "@/lib/lead-row";
+import { normalizeQuoteDiscount, normalizeQuoteDiscountNotice, type QuoteDiscount, type QuoteDiscountAnswer, type QuoteDiscountNotice } from "@/lib/quote-discount";
 import { mergeCutlistRows, mergeStoredCutlistRows } from "@/lib/cutlist-merge";
 
 function toIsoString(value: unknown, fallback = "") {
@@ -518,6 +519,7 @@ function normalizeProject(id: string, data: Record<string, unknown>, options?: {
       }
       return Object.keys(out).length ? out : undefined;
     })(),
+    quoteDiscount: normalizeQuoteDiscount(data.quoteDiscount) ?? undefined,
     projectSettings: settings,
     salesStoredAsFields:
       Boolean(data.sales) && typeof data.sales === "object" && !Array.isArray(data.sales) && !("salesJson" in data) ? true : undefined,
@@ -1595,6 +1597,11 @@ export interface UserNotificationRow {
   appVersion?: string;
   unlockRequestedAtIso?: string;
   unlockAnswer?: UserNotificationUnlockAnswer;
+  // A quote discount's request or counter offer (lib/quote-discount.ts): which request, its figures, and once it's been
+  // answered (by anyone it went to), how.
+  discountRequestId?: string;
+  discountNotice?: QuoteDiscountNotice;
+  discountAnswer?: QuoteDiscountAnswer;
   // Dev mode's test notification (the "test in … s" at the top of Notifications) — for testing only, so it's
   // removed once it's been seen.
   devTest?: boolean;
@@ -7004,6 +7011,10 @@ function userNotificationFromDoc(docSnap: QueryDocumentSnapshot): UserNotificati
     unlockRequestedAtIso: String(data.unlockRequestedAtIso ?? "").trim() || undefined,
     unlockAnswer:
       data.unlockAnswer && typeof data.unlockAnswer === "object" ? (data.unlockAnswer as UserNotificationUnlockAnswer) : undefined,
+    discountRequestId: String(data.discountRequestId ?? "").trim() || undefined,
+    discountNotice: normalizeQuoteDiscountNotice(data.discountNotice),
+    discountAnswer:
+      data.discountAnswer && typeof data.discountAnswer === "object" ? (data.discountAnswer as QuoteDiscountAnswer) : undefined,
     devTest: data.devTest === true ? true : undefined,
   };
 }
@@ -7331,6 +7342,34 @@ export async function snoozeUserNotification(uid: string, notificationId: string
     return true;
   } catch {
     return false;
+  }
+}
+
+// A quote discount's request or counter offer, answered from here (or found already answered): noted on theirs, so its
+// buttons go. (The server notes it on everyone's too — best-effort.)
+export async function setUserNotificationDiscountAnswer(uid: string, notificationId: string, answer: QuoteDiscountAnswer): Promise<boolean> {
+  const userId = String(uid || "").trim();
+  const id = String(notificationId || "").trim();
+  if (!db || !userId || !id) return false;
+  try {
+    await updateDoc(doc(db, "users", userId, "notifications", id), { discountAnswer: answer });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// A project's quote discount as it stands now (answered elsewhere since the page loaded it) — undefined if it couldn't be
+// read, null for none.
+export async function fetchProjectQuoteDiscount(project: Project): Promise<QuoteDiscount | null | undefined> {
+  if (!db || !project) return undefined;
+  try {
+    const ref = await resolveProjectDocRef(project);
+    if (!ref) return undefined;
+    const snap = await getDoc(ref);
+    return snap.exists() ? normalizeQuoteDiscount((snap.data() ?? {}).quoteDiscount) : undefined;
+  } catch {
+    return undefined;
   }
 }
 

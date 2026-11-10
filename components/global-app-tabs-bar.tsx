@@ -1,11 +1,12 @@
 "use client";
 
-import { activeDate, activeDateTime } from "@/lib/company-formats";
+import { activeDate, activeDateTime, activeMoney } from "@/lib/company-formats";
 import { haptic } from "@/lib/haptics";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode, type RefObject, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  BadgePercent,
   Bell,
   CalendarDays,
   Check,
@@ -59,6 +60,18 @@ import { readUserNotificationDoc, restoreUserNotificationDoc } from "@/lib/undo-
 import { useUndo } from "@/components/undo-bar";
 import { ProjectTabQuickActions, projectQuickActionsAttrs } from "@/components/project-quick-actions-menu";
 import { UnlockRequestBox, unlockAnswerText } from "@/components/unlock-request-box";
+import { QuoteDiscountAnswerBox } from "@/components/quote-discount-box";
+import {
+  QUOTE_DISCOUNT_ADDRESS_PARAM,
+  QUOTE_DISCOUNT_COUNTER_TYPE,
+  QUOTE_DISCOUNT_REQUEST_TYPE,
+  QUOTE_DISCOUNT_RESPONSE_TYPE,
+  announceQuoteDiscountChanged,
+  normalizeQuoteDiscount,
+  quoteDiscountAnswerText,
+  type QuoteDiscountAnswer,
+  type QuoteDiscountMode,
+} from "@/lib/quote-discount";
 import { authorizedFetch } from "@/lib/api-fetch";
 import { announceUnlockAnswered } from "@/lib/project-actions";
 import {
@@ -73,6 +86,7 @@ import {
   setAllUserNotificationsRead,
   setUserNotificationRead,
   setUserNotificationUnlockAnswer,
+  setUserNotificationDiscountAnswer,
   snoozeUserNotification,
   type UserNotificationRow,
   type UserNotificationUnlockAnswer,
@@ -113,6 +127,14 @@ function notifReminderIn(row: UserNotificationRow) {
 function canAnswerUnlockHere(row: UserNotificationRow) {
   return row.type === "production_unlock_request" && Boolean(row.unlockRequesterUid && row.projectId && row.companyId) && !row.unlockAnswer;
 }
+// A quote discount's request (to one who can answer it) or counter offer (to who asked), still to be answered.
+function isDiscountQuestion(row: UserNotificationRow) {
+  return (row.type === QUOTE_DISCOUNT_REQUEST_TYPE || row.type === QUOTE_DISCOUNT_COUNTER_TYPE) && Boolean(row.discountNotice);
+}
+function canAnswerDiscountHere(row: UserNotificationRow) {
+  return isDiscountQuestion(row) && Boolean(row.discountRequestId && row.projectId && row.companyId) && !row.discountAnswer;
+}
+const discountMoney = (value: number) => activeMoney(Math.max(0, value));
 const UNLOCK_BUTTON_CLASS = "inline-flex h-7 items-center justify-center rounded-full px-3 text-[12px] font-medium transition hover:brightness-105 max-lg:h-9 max-lg:px-4 max-lg:text-[13.5px]";
 const UNLOCK_DECLINE_STYLE = { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" } as const;
 
@@ -130,6 +152,10 @@ const NOTIF_TYPE_ICONS: Record<string, LucideIcon> = {
   project_unassigned: UserMinus,
   production_unlock_request: Lock,
   production_unlock_response: Unlock,
+  // A quote's discount
+  [QUOTE_DISCOUNT_REQUEST_TYPE]: BadgePercent,
+  [QUOTE_DISCOUNT_COUNTER_TYPE]: BadgePercent,
+  [QUOTE_DISCOUNT_RESPONSE_TYPE]: BadgePercent,
   // Leads (the sidebar's)
   lead_new: Inbox,
   lead_access: Inbox,
@@ -196,6 +222,8 @@ const NOTIF_TYPE_COLORS: Record<string, string> = {
   quote_accepted: "#16A34A",
   quote_declined: "#EF4444",
   production_unlock_request: "#F97316",
+  [QUOTE_DISCOUNT_REQUEST_TYPE]: "#F97316",
+  [QUOTE_DISCOUNT_COUNTER_TYPE]: "#F97316",
   app_version: "#6366F1",
 };
 const NOTIF_OTHER_COLOR = "#64748B";
@@ -555,6 +583,31 @@ export function GlobalAppTabsBar() {
     setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, read: true } : item)));
     if (user?.uid) void markUserNotificationRead(user.uid, row.id);
   }, [isNotifListLoaded, notifRows, user?.uid]);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const requestId = String(params.get(QUOTE_DISCOUNT_ADDRESS_PARAM) || "").trim();
+    const projectId = decodeURIComponent(String(pathname || "").match(/^\/projects\/([^/?#]+)/)?.[1] ?? "");
+    if (!requestId || !projectId) return;
+    const seenKey = `${projectId}|${requestId}`;
+    if (!discountAddressesSeenRef.current.has(seenKey)) {
+      discountAddressesSeenRef.current.add(seenKey);
+      discountFromAddressRef.current = { projectId, requestId };
+    }
+    params.delete(QUOTE_DISCOUNT_ADDRESS_PARAM);
+    const rest = params.toString();
+    window.history.replaceState(window.history.state, "", `${window.location.pathname}${rest ? `?${rest}` : ""}`);
+  }, [pathname]);
+  useEffect(() => {
+    const wanted = discountFromAddressRef.current;
+    if (!wanted || !isNotifListLoaded) return;
+    discountFromAddressRef.current = null;
+    const row = notifRows.find((item) => isDiscountQuestion(item) && item.projectId === wanted.projectId && item.discountRequestId === wanted.requestId);
+    // (Not found: the quote's Quote Extras has it too.)
+    if (!row) return;
+    setDiscountBox({ row, error: "" });
+    setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, read: true } : item)));
+    if (user?.uid) void markUserNotificationRead(user.uid, row.id);
+  }, [isNotifListLoaded, notifRows, user?.uid]);
   const isNotifOpenRef = useRef(isNotifOpen);
   useEffect(() => {
     isNotifOpenRef.current = isNotifOpen;
@@ -622,6 +675,12 @@ export function GlobalAppTabsBar() {
   const unlockBoxPanelRef = useRef<HTMLDivElement | null>(null);
   const shouldRenderUnlockBox = useGlassModalPopOrigin(unlockBoxOpen, unlockBoxOrigin, unlockBoxPanelRef);
   const [unlockAnswering, setUnlockAnswering] = useState<Record<string, "approve" | "deny">>({});
+  // A quote discount's box (components/quote-discount-box.tsx) — straight to its counter offer from a Decline — and any
+  // being answered right now.
+  const [discountBox, setDiscountBox] = useState<{ row: UserNotificationRow; error: string; countering?: boolean } | null>(null);
+  const [discountAnswering, setDiscountAnswering] = useState<Record<string, "approve" | "deny" | "counter">>({});
+  const discountFromAddressRef = useRef<{ projectId: string; requestId: string } | null>(null);
+  const discountAddressesSeenRef = useRef(new Set<string>());
   // A phone or desktop notification of one, tapped: its project opens with unlockRequest on the address — taken off it straight
   // away, and its box opened once the list has loaded.
   const unlockFromAddressRef = useRef<{ projectId: string; requesterUid: string } | null>(null);
@@ -1872,6 +1931,71 @@ export function GlobalAppTabsBar() {
       });
     }
   };
+  // ---- A quote discount's request or counter offer: answering it (app/api/quote-discount). A request's Decline can carry a
+  // counter offer (from its box).
+  const answerDiscount = async (row: UserNotificationRow, decision: "approve" | "deny", counter?: { mode: QuoteDiscountMode; value: string }) => {
+    const uid = user?.uid;
+    if (!uid || !canAnswerDiscountHere(row) || discountAnswering[row.id]) return;
+    const answering = counter ? "counter" : decision;
+    setDiscountAnswering((prev) => ({ ...prev, [row.id]: answering }));
+    const fail = () => setDiscountBox({ row, error: "Couldn't answer that. Check your connection and try again.", countering: Boolean(counter) });
+    try {
+      const response = await authorizedFetch("/api/quote-discount", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: row.type === QUOTE_DISCOUNT_COUNTER_TYPE ? "counter-answer" : "answer",
+          companyId: row.companyId,
+          projectId: row.projectId,
+          requestId: row.discountRequestId,
+          decision,
+          ...(counter ? { counter } : {}),
+        }),
+      });
+      const json = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        alreadyAnswered?: boolean;
+        clientAccepted?: boolean;
+        discount?: unknown;
+        retracted?: boolean;
+      } | null;
+      if (!response.ok || !json?.ok) {
+        fail();
+        return;
+      }
+      const myName = String(user?.displayName || "").trim();
+      const discount = normalizeQuoteDiscount(json.discount);
+      const answer: QuoteDiscountAnswer = json.clientAccepted
+        ? { decision: "client_accepted" }
+        : json.alreadyAnswered
+          ? { decision: "answered" }
+          : counter
+            ? { decision: "counter", ...(myName ? { byName: myName } : {}), ...(discount?.counter ? { counterTotal: discount.counter.newTotal } : {}) }
+            : { decision, ...(myName ? { byName: myName } : {}) };
+      setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, read: true, discountAnswer: answer } : item)));
+      void markUserNotificationRead(uid, row.id);
+      void setUserNotificationDiscountAnswer(uid, row.id, answer);
+      // The project, if it's open: the discount as it is now.
+      if (row.projectId) announceQuoteDiscountChanged({ projectId: row.projectId, discount, retracted: json.retracted });
+      // Done: its box goes. (Already answered, it stays, to say so.)
+      if (!json.alreadyAnswered) setDiscountBox(null);
+      else setDiscountBox((prev) => (prev && prev.row.id === row.id ? { ...prev, row: { ...prev.row, discountAnswer: answer }, countering: false } : prev));
+    } catch {
+      fail();
+    } finally {
+      setDiscountAnswering((prev) => {
+        const next = { ...prev };
+        delete next[row.id];
+        return next;
+      });
+    }
+  };
+  // A Decline pressed on its row or pop-up: a counter offer's is just declined; a request's opens its box at the counter
+  // offer (send one, or just decline).
+  const declineDiscountFromRow = (row: UserNotificationRow) => {
+    if (row.type === QUOTE_DISCOUNT_COUNTER_TYPE) void answerDiscount(row, "deny");
+    else setDiscountBox({ row, error: "", countering: true });
+  };
   // Opening one (its row in the list, or its pop-up): it's read, and to what it's about.
   const openNotification = (row: UserNotificationRow, originEl?: HTMLElement | null) => {
     if (!user?.uid) return;
@@ -1880,6 +2004,8 @@ export function GlobalAppTabsBar() {
     setIsNotifOpen(false);
     if (row.type === "production_unlock_request" && row.unlockRequesterUid && row.projectId) {
       openUnlockBox(row, originEl);
+    } else if (isDiscountQuestion(row) && row.projectId) {
+      setDiscountBox({ row, error: "" });
     } else if (row.type === "app_version") {
       // Straight to that version's What's New page, over whatever page this is.
       openWhatsNew(notificationAppVersion(row));
@@ -2298,6 +2424,53 @@ export function GlobalAppTabsBar() {
                           {unlockAnswerText(row.unlockAnswer)}
                         </span>
                       ) : null}
+                      {isDiscountQuestion(row) && row.discountAnswer ? (
+                        <span
+                          className="ml-1.5 mt-2 inline-flex items-center gap-1 rounded-full border px-2 py-[1px] text-[10.5px] font-medium max-lg:text-[11.5px]"
+                          style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
+                        >
+                          <Check size={11} />
+                          {quoteDiscountAnswerText(row.discountAnswer, discountMoney)}
+                        </span>
+                      ) : null}
+                      {canAnswerDiscountHere(row) ? (
+                        <span className="mt-2 flex items-center gap-2">
+                          {(["approve", "deny"] as const).map((decision) => {
+                            const answering = discountAnswering[row.id];
+                            const accept = decision === "approve";
+                            const press = () => {
+                              if (answering) return;
+                              if (accept) void answerDiscount(row, "approve");
+                              else declineDiscountFromRow(row);
+                            };
+                            return (
+                              <span
+                                key={decision}
+                                role="button"
+                                tabIndex={0}
+                                aria-disabled={Boolean(answering)}
+                                className={`${accept ? "glass-shine text-white" : "border"} ${UNLOCK_BUTTON_CLASS} cursor-pointer ${answering ? "opacity-55" : ""}`}
+                                style={accept ? glassShineStyle("var(--brand-strong)") : UNLOCK_DECLINE_STYLE}
+                                onMouseDown={(event) => event.stopPropagation()}
+                                onContextMenu={(event) => event.stopPropagation()}
+                                onTouchStart={(event) => event.stopPropagation()}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  press();
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key !== "Enter" && event.key !== " ") return;
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  press();
+                                }}
+                              >
+                                {answering === decision ? (accept ? "Accepting..." : "Declining...") : accept ? "Accept" : "Decline"}
+                              </span>
+                            );
+                          })}
+                        </span>
+                      ) : null}
                       {canAnswerUnlockHere(row) ? (
                         <span className="mt-2 flex items-center gap-2">
                           {(["approve", "deny"] as const).map((decision) => {
@@ -2508,8 +2681,42 @@ export function GlobalAppTabsBar() {
   }
 
   const unlockBoxRow = unlockBox ? notifRows.find((item) => item.id === unlockBox.row.id) ?? unlockBox.row : null;
+  const discountBoxRow = discountBox ? notifRows.find((item) => item.id === discountBox.row.id) ?? discountBox.row : null;
+  const discountBoxNotice = discountBoxRow?.discountNotice;
   return (
     <>
+      {discountBox && discountBoxRow && discountBoxNotice ? (
+        <QuoteDiscountAnswerBox
+          // (A fresh box for each opening — straight to its counter offer, or not.)
+          key={`${discountBoxRow.id}:${discountBox.countering ? "counter" : "ask"}`}
+          stage={discountBoxRow.type === QUOTE_DISCOUNT_COUNTER_TYPE ? "counter" : "request"}
+          personName={discountBoxRow.type === QUOTE_DISCOUNT_COUNTER_TYPE ? discountBoxNotice.counterByName || "" : discountBoxNotice.requesterName}
+          projectName={discountBoxNotice.projectName}
+          originalTotal={discountBoxNotice.originalTotal}
+          amountOff={discountBoxNotice.amountOff}
+          amountOffBeforeGst={discountBoxNotice.amountOffBeforeGst}
+          newTotal={discountBoxNotice.newTotal}
+          percent={discountBoxNotice.percent}
+          gstPercent={discountBoxNotice.gstPercent}
+          answer={discountBoxRow.discountAnswer}
+          answering={discountAnswering[discountBoxRow.id]}
+          error={discountBox.error}
+          initialCountering={discountBox.countering}
+          onAccept={() => {
+            setDiscountBox((prev) => (prev ? { ...prev, error: "" } : prev));
+            void answerDiscount(discountBoxRow, "approve");
+          }}
+          onDecline={(counter) => {
+            setDiscountBox((prev) => (prev ? { ...prev, error: "" } : prev));
+            void answerDiscount(discountBoxRow, "deny", counter);
+          }}
+          onOpenProject={() => {
+            setDiscountBox(null);
+            router.push(`/projects/${discountBoxRow.projectId}?tab=sales`);
+          }}
+          onClose={() => setDiscountBox(null)}
+        />
+      ) : null}
       {shouldRenderUnlockBox && unlockBox && unlockBoxRow ? (
         <UnlockRequestBox
           row={unlockBoxRow}
@@ -2540,7 +2747,34 @@ export function GlobalAppTabsBar() {
                   bellRef={notifBtnRef}
                   dismiss={isNotifOpen}
                   actions={
-                    canAnswerUnlockHere(row)
+                    canAnswerDiscountHere(row)
+                      ? (close) => (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                close();
+                                void answerDiscount(row, "approve");
+                              }}
+                              className={`glass-shine ${UNLOCK_BUTTON_CLASS} text-white`}
+                              style={glassShineStyle("var(--brand-strong)")}
+                            >
+                              Accept
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                close();
+                                declineDiscountFromRow(row);
+                              }}
+                              className={`${UNLOCK_BUTTON_CLASS} border`}
+                              style={UNLOCK_DECLINE_STYLE}
+                            >
+                              Decline
+                            </button>
+                          </>
+                        )
+                      : canAnswerUnlockHere(row)
                       ? (close) => (
                           <>
                             <button

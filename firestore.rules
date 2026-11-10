@@ -222,7 +222,12 @@ service cloud.firestore {
 
       match /jobs/{jobId} {
         allow read: if isCompanyMember(companyId);
-        allow write: if isCompanyMember(companyId);
+        // Its quote discount (quoteDiscount) is only ever written by the server (app/api/quote-discount), which checks who
+        // can ask for, answer or add one — written here, anyone in the company could give their own project a discount.
+        allow create: if isCompanyMember(companyId) && !("quoteDiscount" in request.resource.data);
+        allow update: if isCompanyMember(companyId)
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(["quoteDiscount"]);
+        allow delete: if isCompanyMember(companyId);
 
         // Quote grid / Specifications sheet version history — moved out of the job doc's own
         // `sales` field into their own subcollections (one small document per saved version)
@@ -301,7 +306,10 @@ service cloud.firestore {
       // No new projects are made here any more (they all live in companies/{companyId}/jobs, and none are left here).
       // Making one could take over a client's link to another company's project.
       allow create: if false;
-      allow update, delete: if canUseLegacyProject(resource.data);
+      // (Its quote discount: server-only, as a company job's.)
+      allow update: if canUseLegacyProject(resource.data)
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(["quoteDiscount"]);
+      allow delete: if canUseLegacyProject(resource.data);
 
       // Same version-history subcollections as companies/{companyId}/jobs/{jobId} above, for
       // projects still stored in this legacy top-level location — same access as the project.

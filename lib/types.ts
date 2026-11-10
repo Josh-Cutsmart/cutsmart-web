@@ -1,3 +1,5 @@
+import type { QuoteDiscount } from "@/lib/quote-discount";
+
 export type UserRole = string;
 
 export interface Company {
@@ -105,6 +107,8 @@ export interface Project {
   dashboardBoardOrder?: number;
   // Production unlock requests waiting for an answer, by requester uid (lib/production-unlock-server.ts).
   productionUnlockRequests?: Record<string, { requestedAtIso: string; name: string }>;
+  // The quote's discount — asked for, countered, or agreed (lib/quote-discount.ts). Written only by the server.
+  quoteDiscount?: QuoteDiscount;
   projectSettings?: Record<string, unknown>;
   // Stored only in the old text copy, not yet as fields: its next save writes all of them (updateProjectPatch).
   settingsOnlyInTextCopy?: boolean;

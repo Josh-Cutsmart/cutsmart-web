@@ -109,6 +109,78 @@ title: Project request already answered
 message: Someone has already answered this request.
 
 
+# ---------- QUOTE DISCOUNTS ----------
+#
+# Staff ask for a discount on a quote, and whoever can answer accepts it, declines it, or makes a counter offer.
+# The client never sees any of these. Placeholders here:
+#   {person}       The teammate who did it                         Mere Tawhiri
+#   {project}      The project's name                              Harbour View Kitchen
+#   {old_total}    The quote's total before the discount           $24,500.00
+#   {new_total}    The quote's total with the discount             $23,000.00
+#   {amount_off}   How much comes off                              $1,500.00
+
+# Sent to whoever can answer discounts. The buttons show on Android and computers.
+[quote_discount_request]
+title: Discount request
+message: {person} asked for {new_total} on "{project}" — {amount_off} off {old_total}.
+button_accept: Accept
+button_decline: Decline
+
+# Sent back to whoever asked, when it's declined with a counter offer.
+[quote_discount_counter]
+title: Counter offer
+message: {person} offered {new_total} on "{project}" instead — {amount_off} off {old_total}.
+button_accept: Accept
+button_decline: Decline
+
+[quote_discount_response.approved]
+title: Discount accepted
+message: {person} accepted {new_total} on "{project}" — {amount_off} off.
+
+# The same, when the quote was waiting on the client: it's taken off the client portal so the new one can be sent.
+[quote_discount_response.approved_unsent]
+title: Discount accepted
+message: {person} accepted {new_total} on "{project}". The quote has been taken off the client portal — send the new one when you're ready.
+
+[quote_discount_response.declined]
+title: Discount declined
+message: {person} declined your discount on "{project}".
+
+# Sent to whoever made the counter offer.
+[quote_discount_response.counter_accepted]
+title: Counter offer accepted
+message: {person} accepted {new_total} on "{project}".
+
+[quote_discount_response.counter_accepted_unsent]
+title: Counter offer accepted
+message: {person} accepted {new_total} on "{project}". The quote has been taken off the client portal.
+
+[quote_discount_response.counter_declined]
+title: Counter offer declined
+message: {person} declined your counter offer on "{project}".
+
+# What shows after tapping Accept or Decline on the notification itself.
+[quote_discount_tap.approved]
+title: CutSmart
+message: Accepted — {person} has been told.
+
+[quote_discount_tap.declined]
+title: CutSmart
+message: Declined — {person} has been told.
+
+[quote_discount_tap.counter_accepted]
+title: CutSmart
+message: Accepted — the quote's new total is {new_total}.
+
+[quote_discount_tap.counter_declined]
+title: CutSmart
+message: Declined — {person} has been told.
+
+[quote_discount_tap.already_answered]
+title: CutSmart
+message: This discount has already been answered.
+
+
 # ---------- LEADS ----------
 
 [lead_new.email]

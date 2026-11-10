@@ -1,5 +1,6 @@
 import { notificationGroupPhrase, notificationWords } from "@/lib/notification-messages";
 import { WHATS_NEW_URL_PARAM } from "@/lib/update-notes-utils";
+import { quoteDiscountRequestUrl } from "@/lib/quote-discount";
 
 // The kinds of notification CutSmart puts in the bell's Notifications list — each one can also go to
 // the user's phone/desktop (web push: lib/push-client.ts, lib/push-server.ts), and each user picks which
@@ -26,6 +27,21 @@ export const PUSH_NOTIFICATION_CATEGORIES: readonly PushNotificationCategory[] =
         description: "Someone asks to unlock a project's production — on Android and computers you can approve or deny it right from the notification.",
       },
       { type: "production_unlock_response", label: "Unlock request answered", description: "Your request to unlock a project's production is approved or denied." },
+      {
+        type: "quote_discount_request",
+        label: "Discount requests",
+        description: "Someone asks for a discount on a quote — on Android and computers you can accept or decline it right from the notification.",
+      },
+      {
+        type: "quote_discount_counter",
+        label: "Discount counter offers",
+        description: "A discount you asked for is declined with a counter offer — accept or decline it right from the notification.",
+      },
+      {
+        type: "quote_discount_response",
+        label: "Discount answered",
+        description: "A discount you asked for, or a counter offer you made, is accepted or declined.",
+      },
     ],
   },
   {
@@ -151,13 +167,25 @@ export function notificationAppVersion(input: { appVersion?: unknown; title?: un
   return String(input.appVersion ?? "").trim() || String(input.title ?? "").replace(/^New version\s*/i, "").trim();
 }
 
-export function pushNotificationUrl(input: { appVersion?: unknown;  type?: unknown; projectId?: unknown; leadId?: unknown; eventId?: unknown; title?: unknown; unlockRequesterUid?: unknown }): string {
+export function pushNotificationUrl(input: {
+  appVersion?: unknown;
+  type?: unknown;
+  projectId?: unknown;
+  leadId?: unknown;
+  eventId?: unknown;
+  title?: unknown;
+  unlockRequesterUid?: unknown;
+  discountRequestId?: unknown;
+}): string {
   const eventId = String(input.eventId ?? "").trim();
   if (String(input.type ?? "") === "calendar_reminder" && eventId) return `/calendar?event=${encodeURIComponent(eventId)}`;
   const projectId = String(input.projectId ?? "").trim();
   if (String(input.type ?? "") === "access_code_used") return "/company-settings?section=staff";
   const unlockRequesterUid = String(input.unlockRequesterUid ?? "").trim();
   if (projectId && unlockRequesterUid) return productionUnlockRequestUrl(projectId, unlockRequesterUid);
+  // A discount to answer (a request, or a counter offer): its project, with the box to answer it.
+  const discountRequestId = String(input.discountRequestId ?? "").trim();
+  if (projectId && discountRequestId) return quoteDiscountRequestUrl(projectId, discountRequestId);
   if (projectId) return `/projects/${encodeURIComponent(projectId)}`;
   if (String(input.leadId ?? "").trim() || String(input.type ?? "").startsWith("lead_")) return "/leads";
   if (String(input.type ?? "") === "app_version") {

@@ -11,6 +11,8 @@ import {
 import { normalizeSpecsGrid, quoteGridTotalText } from "@/lib/specs-grid-types";
 import { projectNotifySubscriberUids } from "@/lib/project-notify";
 import { pushStoredNotification } from "@/lib/push-server";
+import { listCompanyMemberAccess } from "@/lib/api-company-access";
+import { cancelQuoteDiscountForAcceptedQuote } from "@/lib/quote-discount-server";
 
 // Quote's own version of .../submit/route.ts. Two differences from Specs' submit: `name` is
 // REQUIRED here (rejected as missing-name if blank) since "Accepted by X" is a materially more
@@ -78,6 +80,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     console.error("[specs-share/accept] write failed:", err);
     return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : "write-failed" }, { status: 500 });
   }
+
+  // A discount staff were still working out is gone — the client's accepted this price (best-effort).
+  await cancelQuoteDiscountForAcceptedQuote(projectRef, shareDoc.projectId, await listCompanyMemberAccess(shareDoc.companyId).catch(() => []));
 
   // Best-effort changelog entry — never lets a logging failure surface as (or block) the real
   // acceptance above, which has already succeeded by this point.

@@ -19,6 +19,9 @@ whatsNew: [
 <li>Nesting's right-click menu can change a piece's grain direction. It only turns if the piece still fits its sheet that way, otherwise a yellow note says why</li>
 <li>In the Cutlist List and the CNC Cutlist, linked drawer fronts sit together in one green box</li>
 <li>Changing the part type of one linked drawer front changes the whole bank with it, so its fronts stay together</li>
+<li>Quote discounts: ask for one from the quote's bottom bar with Request Discount, as a new total, an amount off or a percentage off. It comes off the price before GST, and GST is worked out on what's left. Whoever can answer discounts is notified and can accept it, decline it, or make a counter offer for you to accept or decline. Once it's agreed, the new total shows everywhere the quote's price does, and a quote still waiting on the client comes off the client portal so the new one can be sent. The client only ever sees the new total</li>
+<li>The Quote and Specifications windows no longer keep saving by themselves while they're open, which made the save bubble flash and could slow the page down. Thin spacer rows also keep the height you gave them</li>
+<li>Two new permissions in Company Settings › Roles: one to add a discount to a quote straight away, and one to get and answer discount requests. The owner always has both</li>
 <li>Cutlist Entry: a cabinet's Drilled dropdown is the same size as the other dropdowns</li>
 <li>A door's hinge drawing in the Cutlist List now grows when you point at it, as it does in the Cutlist Entry, opening out like a menu. Click it and it grows into a big view in the middle of the screen, with the part's name at the top and each door's sizes along its sides</li>
 </ul>

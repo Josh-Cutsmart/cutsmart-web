@@ -6,6 +6,8 @@ import { getProjectDocRefAdmin, verifyCompanyMembershipAdmin, type SpecsShareLin
 import { normalizeSpecsGrid, quoteGridTotalText } from "@/lib/specs-grid-types";
 import { projectNotifySubscriberUids } from "@/lib/project-notify";
 import { pushStoredNotification } from "@/lib/push-server";
+import { listCompanyMemberAccess } from "@/lib/api-company-access";
+import { cancelQuoteDiscountForAcceptedQuote } from "@/lib/quote-discount-server";
 
 // Staff accepting the quote (kind "quote") or submitting the specifications (kind "specs") for the client — the client
 // told them, rather than doing it in their portal. The same records as the client's own accept / submit routes (the
@@ -99,6 +101,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       console.error("[specs-share/on-behalf] quote write failed:", error);
       return NextResponse.json({ ok: false, error: "write-failed" }, { status: 500 });
     }
+    // A discount staff were still working out is gone — the client's accepted this price (best-effort).
+    await cancelQuoteDiscountForAcceptedQuote(projectRef, projectId, await listCompanyMemberAccess(companyId).catch(() => []));
     const price = quoteGridTotalText(grid);
     action = `Accepted Quote on behalf of ${clientName}`;
     notification = {

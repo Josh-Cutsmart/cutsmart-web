@@ -23,6 +23,8 @@ export const QUOTE_TEMPLATE_PLACEHOLDERS: QuoteTemplatePlaceholderOption[] = [
   { key: "client_last_name", label: "Client Last Name", token: "{{client_last_name}}" },
   { key: "quote_total", label: "Quote Total", token: "{{quote_total}}" },
   { key: "discount_total", label: "Discount Total", token: "{{discount_total}}" },
+  // The project's own agreed discount (Request / Add Discount in the quote), as it comes off the total.
+  { key: "project_discount", label: "Project Discount", token: "{{project_discount}}" },
   { key: "incl_gst", label: "Incl GST", token: "{{incl_gst}}" },
   { key: "project_creator", label: "Project Creator", token: "{{project_creator}}" },
   { key: "project_creator_mobile", label: "Project Creator Mobile", token: "{{project_creator_mobile}}" },

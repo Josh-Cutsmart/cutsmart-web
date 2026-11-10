@@ -1437,7 +1437,13 @@ export default function SpecsGridEditor({
       }
       // Some neighbor (possibly re-checked just now) still genuinely needs the current height.
       if (maxNeededPx >= currentHeight - GROW_ROW_TOLERANCE_PX) return;
-      const nextRows = rows.map((r, ri) => (ri === row ? { ...r, heightPx: Math.max(DEFAULT_ROW_HEIGHT_PX, Math.ceil(maxNeededPx)) } : r));
+      // Never below a row's usual height — and never ABOVE what it already is: a row already at (or deliberately set
+      // under) that usual height has nothing to shrink to. Without this it "shrank" a blank row from 20px to 20px —
+      // a save of nothing, every time it was measured again, which it was after each save: the sheet saving itself
+      // over and over (the save bubble flashing, the window lagging) — and pushed a thin spacer row up to 20px.
+      const shrunkPx = Math.max(DEFAULT_ROW_HEIGHT_PX, Math.ceil(maxNeededPx));
+      if (shrunkPx >= readHeightPx(row)) return;
+      const nextRows = rows.map((r, ri) => (ri === row ? { ...r, heightPx: shrunkPx } : r));
       return commitGrownRows(nextRows, row, col);
     }
     // A multi-row span is only safe to shrink in the one case where it's completely unambiguous:
@@ -1484,6 +1490,9 @@ export default function SpecsGridEditor({
   // Shared commit tail for both the grow and shrink branches above — see their own comment for why
   // persistence differs while the row's own cell is focused vs. not.
   const commitGrownRows = (nextRows: SpecsGrid["rows"], row: number, col: number) => {
+    // (No row's height actually changing: nothing to show or save.)
+    const was = liveGridRef.current.rows;
+    if (nextRows.length === was.length && nextRows.every((r, ri) => r.heightPx === was[ri]?.heightPx)) return;
     const next: SpecsGrid = {
       pageSize: liveGridRef.current.pageSize,
       columnWidths: liveGridRef.current.columnWidths,
