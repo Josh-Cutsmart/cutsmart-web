@@ -36402,12 +36402,43 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       setExpandedDoorRows((prev) => ({ ...prev, [parent.id]: true }));
     }
     setCutlistJumpTarget(parsed);
+    // (A phone: on its List, where the rows are — a cutlist with one room would otherwise open on its Entry.)
+    setCutlistMobileView("list");
     setProductionNav("cutlist");
     setNestingFullscreen(false);
     setIsNestingSheetPreviewOpen(false);
     setNestingSheetPreview(null);
     setNestingPreviewHoverPieceId(null);
     setNestingTooltip(null);
+  };
+
+  // A CNC Cutlist row double tapped (or double clicked): to its piece in the Production Cutlist — as Nesting's jump (just
+  // above: the project's whole cutlist shown, its table opened if it was collapsed, its cabinet / drawer / door row opened
+  // for one of their pieces, scrolled to and lit up), with the search cleared too, so nothing hides it. (A door from a
+  // configured drawing carries its instance in its id — `…__cfg_instance_2__dor__…` — which its cutlist row doesn't.)
+  const jumpToCutlistFromCncRow = (row: CncDisplayRow) => {
+    setCutlistSearch("");
+    jumpToCutlistFromDerivedRowId(String(row.id || "").replace(/__cfg_instance_\d+/, ""));
+  };
+  // Two taps on the same row close together: the jump. One: `single` (a phone's row opens its details), once it's clear
+  // no second tap is coming — straight away where a row has nothing to do on one tap.
+  const cncRowTapRef = useRef<{ key: string; at: number; timer: number } | null>(null);
+  const onCncRowTap = (key: string, row: CncDisplayRow, single?: () => void) => {
+    const now = Date.now();
+    const last = cncRowTapRef.current;
+    if (last) window.clearTimeout(last.timer);
+    if (last && last.key === key && now - last.at < 320) {
+      cncRowTapRef.current = null;
+      jumpToCutlistFromCncRow(row);
+      return;
+    }
+    const timer = single
+      ? window.setTimeout(() => {
+          cncRowTapRef.current = null;
+          single();
+        }, 260)
+      : 0;
+    cncRowTapRef.current = { key, at: now, timer };
   };
 
   const cutlistFullscreenNow = resolvedTab === "production" && productionAccess.view && productionNav === "cutlist";
@@ -45669,7 +45700,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       return text !== "" && Number.isFinite(Number(text)) ? Number(text) : text;
     };
 
-    // Rows 3–4: "Project Name:" / "Designer:" across B:F, the company name across T3:U4.
+    // Rows 3–4: "Project Name:" / "Designer:" across B:F, the company name across G3:U4 (room for a long name — it was cut
+    // off in just T:U), kept to the right.
     const companyName =
       String(companyDoc?.companyName ?? companyDoc?.name ?? ((companyDoc?.company as Record<string, unknown> | undefined)?.name ?? "")).trim() ||
       "Company";
@@ -45686,8 +45718,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       font: { ...FONT, size: 16, bold: true },
       alignment: { horizontal: "left", vertical: "middle" },
     });
-    sheet.mergeCells(3, 20, 4, 21);
-    Object.assign(sheet.getCell(3, 20), {
+    sheet.mergeCells(3, 7, 4, 21);
+    Object.assign(sheet.getCell(3, 7), {
       value: companyName,
       font: { ...FONT, size: 36, bold: true },
       alignment: { horizontal: "right", vertical: "middle" },
@@ -55776,8 +55808,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 key={`cnc_mobile_row_${group.boardKey}_${row.id}_${idx}`}
                                 type="button"
                                 onClick={(e) => {
-                                  cncMobileRowDetailOriginElRef.current = e.currentTarget;
-                                  setCncMobileRowDetailOrigin(captureGlassModalOrigin(e));
+                                  // (Where it was tapped, now — the details grow out of it, a moment later.)
+                                  const originEl = e.currentTarget;
+                                  const origin = captureGlassModalOrigin(e);
+                                  onCncRowTap(`${group.boardKey}_${row.id}_${idx}`, row as CncDisplayRow, () => {
+                                  cncMobileRowDetailOriginElRef.current = originEl;
+                                  setCncMobileRowDetailOrigin(origin);
                                   setCncMobileRowDetail({
                                     boardLabel: group.boardLabel,
                                     partName: String(row.name || ""),
@@ -55791,7 +55827,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     informationLines: informationLinesFromValue(String(row.information || "")),
                                   });
                                   setIsCncMobileRowDetailOpen(true);
+                                  });
                                 }}
+                                title="Double tap to show it in the Production Cutlist"
                                 className="flex w-full items-center gap-2 px-3 py-2 text-left active:bg-[var(--panel-muted)]"
                               >
                                 <span className="w-[54px] shrink-0 truncate">
@@ -55962,20 +56000,36 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   : 1;
                               const groupedPieceDividerClass = isContinuationOfSameGroupedDoor ? " border-t border-[var(--panel-border)]" : "";
                               // Split drawer-front bank siblings (expandAcceptedRowForCutlist) —
-                              // same treatment as the Production Cutlist table: a chain-link icon +
-                              // front-index suffix on the name, and a colored connector border to
-                              // the next row when it's the next front in the same bank.
+                              // a chain-link icon + front-index suffix on the name, and the bank's rows
+                              // together in one green box: outlined round the whole of it (its first
+                              // row's top, its last row's bottom, both sides of every row) and filled a
+                              // light green — no green line between its rows, just a faint divider.
                               const rowIsBankFront = Boolean(row.bankGroupId);
                               const rowBankConnectsToNext = Boolean(
                                 rowIsBankFront && nextRow && (nextRow as CncDisplayRow).bankGroupId === row.bankGroupId,
                               );
+                              const rowBankConnectsToPrev = Boolean(
+                                rowIsBankFront && prevRow && (prevRow as CncDisplayRow).bankGroupId === row.bankGroupId,
+                              );
+                              const rowInBankBox = rowBankConnectsToPrev || rowBankConnectsToNext;
+                              const bankOutline = "2px solid var(--success-strong)";
                               return (
                                 <Fragment key={`${group.boardKey}_${row.id}_${idx}`}>
                                   <tr
+                                    onClick={() => onCncRowTap(`${group.boardKey}_${row.id}_${idx}`, row as CncDisplayRow)}
+                                    title="Double click to show it in the Production Cutlist"
                                     className={(isContinuationOfSameCabinetry || isContinuationOfSameGroupedDoor) ? "border-0" : "border-t border-[#E4E7EE]"}
                                     style={{
                                       backgroundColor: stripeIndex % 2 === 1 ? "color-mix(in srgb, var(--text-main) 4%, var(--panel-bg))" : "var(--panel-bg)",
-                                      ...(rowBankConnectsToNext ? { borderBottom: "2px solid var(--success-strong)" } : null),
+                                      ...(rowInBankBox
+                                        ? {
+                                            backgroundColor: "color-mix(in srgb, var(--success-strong) 9%, var(--panel-bg))",
+                                            borderLeft: bankOutline,
+                                            borderRight: bankOutline,
+                                            borderTop: rowBankConnectsToPrev ? "1px solid color-mix(in srgb, var(--success-strong) 22%, transparent)" : bankOutline,
+                                            borderBottom: rowBankConnectsToNext ? "none" : bankOutline,
+                                          }
+                                        : null),
                                     }}
                                   >
                                     {!hideIdentityCells && (

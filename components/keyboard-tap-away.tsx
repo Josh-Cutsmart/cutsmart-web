@@ -14,7 +14,8 @@ import { expectsKeyboard } from "@/lib/use-keyboard-inset";
 //     glass dropdowns);
 //   - anything marked data-keep-keyboard;
 //   - a button made to keep the cursor in the box (its press stops the focus moving — mousedown's default prevented: a tag
-//     suggestion, an editor's Bold or List, …).
+//     suggestion, an editor's Bold or List, …);
+//   - the box's own form's submit button (Log in, Send reset link, …) — sending what's been typed is what it's for.
 
 const KEEP_SELECTOR = [
   "[data-search-clear-button]",
@@ -53,6 +54,10 @@ export function KeyboardTapAway() {
       // The box's own bar (its icon, its padding): the one marked open, or the label it's in.
       const bar = field.closest("[data-search-open], label");
       if (bar?.contains(target)) return;
+      // Its own form's submit button.
+      const submit = target.closest<HTMLButtonElement | HTMLInputElement>("button[type='submit'], input[type='submit']");
+      const form = field.closest("form");
+      if (submit && form && submit.form === form) return;
       pending = { field, atMs: Date.now() };
     };
     // The tap comes to a click: the keyboard's put away, and nothing else gets the click.

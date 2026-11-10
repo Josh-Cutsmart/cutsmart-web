@@ -12,6 +12,8 @@ whatsNew: [
 <u><b>Projects</b></u>
 <ul>
 <li>Calmer scroll bars in the project's drop-down menus</li>
+<li>Double tap any part in the CNC Cutlist to go straight to it in the Production Cutlist, its table opened if it was collapsed</li>
+<li>In the CNC Cutlist, linked drawer fronts sit together in one green box</li>
 </ul>
 
 <u><b>Dashboard and Leads</b></u>

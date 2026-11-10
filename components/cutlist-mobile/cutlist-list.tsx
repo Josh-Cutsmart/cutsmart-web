@@ -239,6 +239,9 @@ export function CutlistListView({
                         </div>
                       ) : null}
                       <div
+                        // Its row, as the computer's cutlist marks it — what a jump to a piece (from Nesting or the CNC
+                        // Cutlist) scrolls to and lights up.
+                        data-cutlist-row-id={card.id}
                         role="button"
                         tabIndex={0}
                         onClick={(e) => press(e.currentTarget)}
