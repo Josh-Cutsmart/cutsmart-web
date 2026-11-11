@@ -20,6 +20,34 @@ whatsNew: [
 <li>In the Cutlist List and the CNC Cutlist, linked drawer fronts sit together in one green box</li>
 <li>Changing the part type of one linked drawer front changes the whole bank with it, so its fronts stay together</li>
 <li>Quote discounts: ask for one from the quote's bottom bar with Request Discount, as a new total, an amount off or a percentage off. It comes off the price before GST, and GST is worked out on what's left. Whoever can answer discounts is notified and can accept it, decline it, or make a counter offer for you to accept or decline. Once it's agreed, the new total shows everywhere the quote's price does, and a quote still waiting on the client comes off the client portal so the new one can be sent. The client only ever sees the new total</li>
+<li>On phones, every board shows its sheet size bubble (like 2.4) before its name, as the Cutlist Entry does on a computer: in the Entry and List cards, Board Settings, and the board picker when changing picked parts</li>
+<li>The X marking a clashed edge on part labels is smaller</li>
+<li>Edge tape library: add your edge tapes (colour, thickness and width) in Company Settings › Materials & Boards. The ones picked most come first in every list</li>
+<li>Board Settings' Edging offers Matching and your library's edge tapes. Edges using a different tape are totalled under Board Settings, and taken off their board's own edge tape</li>
+<li>Every plain piece in the Cutlist Entry and List has a small drawing of it, with an X on each clashed edge. Hover for a bigger one, or click it to open it: click an edge to clash it (Matching) or unclash it, or right-click an edge to pick its edge tape from a list you can search. The Clashing column updates to match, and the part's labels mark that exact edge with the tape's name beside it</li>
+<li>The edge tape list on a piece's drawing looks like the app's other dropdowns, with an X to clear the search. Its round + adds a new edge tape (colour, thickness and width) to your library and puts it on that edge straight away</li>
+<li>Board Settings' Edging shows just the tape's colour, and opens the same edge tape list as the cutlist, with search and the + to add a new tape. It only offers edge tapes wider than the board is thick, so a 25mm board won't offer 22mm tape</li>
+<li>Type edge tape into the Edge Tape card by hand with its + buttons: a colour and the metres to order. It's on the Order page too</li>
+<li>CNC Cutlist: point at an information line to switch it off with the switch on its left. It stays on screen, greyed and crossed off, but is left out of the export and print. It stays off until you switch it back on, and Show All puts them all back</li>
+<li>CNC Cutlist: the size each piece's grain runs along is bold and underlined, and the Grain column says Long or Short. The same goes for its export and print</li>
+<li>CNC Cutlist print: the Room, Part Name and Information headings sit on the left, over their words</li>
+<li>Switching a board's Grain off leaves its pieces looking like ones with no grain, but remembers each piece's grain direction. Switch it back on and they're all as you set them</li>
+<li>On a piece's drawing, you can unclash every edge so it has no clashing at all, and the Clashing dropdowns always follow the drawing (and the drawing the dropdowns)</li>
+<li>Edges clicked on a piece's drawing before its sizes are typed in stay on the sides you clicked, and its Clashing changes between long (L) and short (S) to match once the sizes are in</li>
+<li>In dark mode, notes boxes no longer have a shadow round them while you're typing</li>
+<li>Drawing: cabinets' toe kicks (and the false cabinet behind a dropped part) are as high as Cabinetry's Foot Height, or 150mm when it's blank</li>
+<li>Production: dropdown arrows flip while they're open, like the rest of the app</li>
+<li>Existing Cabinetry, Cabinetry and Board Settings' Thickness show "mm" inside the box</li>
+<li>Edge tape typed into the Edge Tape card is picked from the same list as Board Settings' Edging, with search and the + for a new tape, and shows its thickness and width</li>
+<li>Board colour memory now counts the thicknesses and finishes used with each colour, as well as its edging. Click a colour in Company Settings to see them</li>
+<li>Picking a colour in Board Settings fills in the thickness, finish and edging it's used with most</li>
+<li>Board Settings' Grain and Lacquer switches are the same height as the boxes beside them, and Top Scribers matches them</li>
+<li>Design: the Product and Rooms Included switches are the same size as Production's, with the Product rows evenly spaced</li>
+<li>In dark mode, every on/off switch's circle is light, so a switch no longer looks greyed out</li>
+<li>Hardware: the Hinge Type box matches New Drawer Type, and the titles fit on one line</li>
+<li>Edge tapes are listed as their colour with the size in brackets, like Black (1 × 22mm)</li>
+<li>Edge tape has its own card beside Board Settings on wide screens, or below it on smaller ones. It lists each tape's colour, thickness and width, the metres the cutlist uses, and the Total including excess. The Order page lists every edge tape to order beside the boards</li>
+<li>When you add an edge tape from a piece's drawing, its thickness starts at the one your company uses most</li>
 <li>The Quote and Specifications windows no longer keep saving by themselves while they're open, which made the save bubble flash and could slow the page down. Thin spacer rows also keep the height you gave them</li>
 <li>Two new permissions in Company Settings › Roles: one to add a discount to a quote straight away, and one to get and answer discount requests. The owner always has both</li>
 <li>Cutlist Entry: a cabinet's Drilled dropdown is the same size as the other dropdowns</li>

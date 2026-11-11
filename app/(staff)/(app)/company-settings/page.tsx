@@ -47,6 +47,7 @@ import { QUOTE_TEMPLATE_PLACEHOLDERS } from "@/lib/quote-template-placeholders";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 import SpecsGridEditor from "@/components/specs-grid-editor-lazy";
 import { type SpecsGrid, createEmptyGrid, normalizeSpecsGrid } from "@/lib/specs-grid-types";
+import { normalizeEdgeTapeLibrary } from "@/lib/edge-tapes";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { GlassDropdown, type GlassDropdownOption } from "@/components/glass-dropdown";
 import { normalizeUnlockPrefixMode, UNLOCK_PREFIX_OPTIONS, unlockPasswordFor, type UnlockPrefixMode } from "@/lib/production-unlock-password";
@@ -140,7 +141,15 @@ type SubStageRow = { name: string; color: string; isDefault?: boolean };
 type StatusRow = { name: string; color: string; subStages?: SubStageRow[]; isComplete?: boolean; isWon?: boolean };
 type SheetSizeRow = { h: string; w: string; isDefault: boolean };
 type BoardEdgingMemoryRow = { value: string; count: string };
-type BoardColourMemoryRow = { value: string; count: string; edgings: BoardEdgingMemoryRow[] };
+type BoardColourMemoryRow = {
+  value: string;
+  count: string;
+  edgings: BoardEdgingMemoryRow[];
+  // The thicknesses (mm) and finishes boards in this colour have been — each counted, as its edgings are.
+  thicknesses: BoardEdgingMemoryRow[];
+  finishes: BoardEdgingMemoryRow[];
+};
+type BoardColourMemoryList = "edgings" | "thicknesses" | "finishes";
 type TagUsageRow = { value: string; count: string };
 // Every pop-up on this page is put on the page's top level (document.body), not inside the settings content it's
 // written in — inside it, it sat in <main>, the page's scroll area: focusing a field in a pop-up scrolled the settings
@@ -990,7 +999,13 @@ function normalizeBoardColourMemory(raw: unknown): BoardColourMemoryRow[] {
       .filter((row) => row && typeof row === "object")
       .map((row) => {
         const item = row as Record<string, unknown>;
-        return { value: toStr(item.value), count: toStr(item.count ?? 0, "0"), edgings: normalizeBoardEdgingMemory(item.edgings) };
+        return {
+          value: toStr(item.value),
+          count: toStr(item.count ?? 0, "0"),
+          edgings: normalizeBoardEdgingMemory(item.edgings),
+          thicknesses: normalizeBoardEdgingMemory(item.thicknesses),
+          finishes: normalizeBoardEdgingMemory(item.finishes),
+        };
       })
       .filter((row) => row.value)
       .sort((a, b) => Number(b.count) - Number(a.count) || a.value.localeCompare(b.value));
@@ -1004,6 +1019,8 @@ function normalizeBoardColourMemory(raw: unknown): BoardColourMemoryRow[] {
         value: toStr(item.value ?? item.colour ?? item.color),
         count: toStr(item.count ?? 0, "0"),
         edgings: normalizeBoardEdgingMemory(item.edgings),
+        thicknesses: normalizeBoardEdgingMemory(item.thicknesses),
+        finishes: normalizeBoardEdgingMemory(item.finishes),
       };
     })
     .filter((row) => row.value)
@@ -2265,6 +2282,10 @@ export default function CompanySettingsPage() {
   const [expandedBoardColourMemoryRows, setExpandedBoardColourMemoryRows] = useState<Set<string>>(new Set());
   const [boardThicknesses, setBoardThicknesses] = useState<string[]>(["16", "18"]);
   const [boardFinishes, setBoardFinishes] = useState<string[]>(["Satin"]);
+  // The edge tape library (lib/edge-tapes.ts) — its sizes as text while they're edited — and how many times each tape's
+  // been picked (counted from projects as they're picked, never saved from here: see boardMaterialUsage's note).
+  const [edgeTapeLibrary, setEdgeTapeLibrary] = useState<Array<{ id: string; name: string; thicknessMm: string; widthMm: string }>>([]);
+  const [edgeTapePicks, setEdgeTapePicks] = useState<Record<string, number>>({});
   // Drag-to-reorder for the Sheet thicknesses / Board finishes chips.
   const [thicknessDragIndex, setThicknessDragIndex] = useState<number | null>(null);
   const [finishDragIndex, setFinishDragIndex] = useState<number | null>(null);
@@ -2684,6 +2705,22 @@ export default function CompanySettingsPage() {
         setBoardColourMemory(normalizeBoardColourMemory(doc.boardMaterialUsage));
         setBoardThicknesses(normalizeStringList(doc.boardThicknesses, ["16", "18"]));
         setBoardFinishes(normalizeStringList(doc.boardFinishes, ["Satin"]));
+        setEdgeTapeLibrary(
+          normalizeEdgeTapeLibrary((doc as Record<string, unknown>).edgeTapeLibrary).map((tape) => ({
+            id: tape.id,
+            name: tape.name,
+            thicknessMm: tape.thicknessMm ? String(tape.thicknessMm) : "",
+            widthMm: tape.widthMm ? String(tape.widthMm) : "",
+          })),
+        );
+        {
+          const rawPicks = (doc as Record<string, unknown>).edgeTapePicks;
+          setEdgeTapePicks(
+            rawPicks && typeof rawPicks === "object"
+              ? Object.fromEntries(Object.entries(rawPicks as Record<string, unknown>).map(([id, n]) => [id, Number(n) || 0]))
+              : {},
+          );
+        }
         setSheetSizes(normalizeSheetSizes(doc.sheetSizes));
         setPartTypes(normalizePartTypes(doc.partTypes));
         setContactCategories(normalizeContactCategories((doc as Record<string, unknown>).contactCategories));
@@ -4110,6 +4147,7 @@ export default function CompanySettingsPage() {
         projectTagUsage,
         boardThicknesses,
         boardFinishes,
+        edgeTapeLibrary,
         sheetSizes,
         roles,
         itemCategories,
@@ -4246,6 +4284,8 @@ export default function CompanySettingsPage() {
             value: row.value,
             count: Number(row.count || 0),
             edgings: row.edgings.map((edging) => ({ value: edging.value, count: Number(edging.count || 0) })),
+            thicknesses: row.thicknesses.map((entry) => ({ value: entry.value, count: Number(entry.count || 0) })),
+            finishes: row.finishes.map((entry) => ({ value: entry.value, count: Number(entry.count || 0) })),
           })),
         },
       });
@@ -4287,43 +4327,43 @@ export default function CompanySettingsPage() {
     await deleted;
   };
 
-  // Same fetch-fresh-then-patch reasoning as onDeleteBoardColourMemoryRow above — an edging's
-  // count is also live, bumped from the project page whenever a board row's edging changes. Its
-  // Undo too: back on its colour (if that's still there) once the delete has gone through.
-  const onDeleteBoardEdgingMemoryRow = async (colourValue: string, edgingValue: string) => {
+  // Same fetch-fresh-then-patch reasoning as onDeleteBoardColourMemoryRow above — a colour's edging, thickness and finish
+  // counts are also live, kept by the project page as its boards change. Forgetting one, and its Undo: back on its colour
+  // (if that's still there) once the delete has gone through.
+  const onDeleteBoardColourMemoryEntry = async (colourValue: string, list: BoardColourMemoryList, entryValue: string, shownAs: string) => {
     if (!activeCompanyId || !canEditCompanySettings) return;
     const targetColour = toStr(colourValue);
-    const targetEdging = toStr(edgingValue);
-    if (!targetColour || !targetEdging) return;
+    const targetEntry = toStr(entryValue);
+    if (!targetColour || !targetEntry) return;
     const colourRow = boardColourMemory.find((row) => row.value === targetColour);
-    const at = colourRow ? colourRow.edgings.findIndex((edging) => edging.value === targetEdging) : -1;
-    let removed = at >= 0 ? colourRow?.edgings[at] : undefined;
+    const at = colourRow ? colourRow[list].findIndex((entry) => entry.value === targetEntry) : -1;
+    let removed = at >= 0 ? colourRow?.[list][at] : undefined;
     let freshAt = at;
     const withoutIt = (row: BoardColourMemoryRow) =>
-      row.value === targetColour ? { ...row, edgings: row.edgings.filter((edging) => edging.value !== targetEdging) } : row;
+      row.value === targetColour ? { ...row, [list]: row[list].filter((entry) => entry.value !== targetEntry) } : row;
     setBoardColourMemory((prev) => prev.map(withoutIt));
     const deleted = patchBoardColourMemory((rows) => {
       const freshColour = rows.find((row) => row.value === targetColour);
-      const i = freshColour ? freshColour.edgings.findIndex((edging) => edging.value === targetEdging) : -1;
+      const i = freshColour ? freshColour[list].findIndex((entry) => entry.value === targetEntry) : -1;
       if (freshColour && i >= 0) {
-        removed = freshColour.edgings[i];
+        removed = freshColour[list][i];
         freshAt = i;
       }
       return rows.map(withoutIt);
-    }, "board-edging-remove-failed");
+    }, `board-${list}-remove-failed`);
     if (removed) {
-      offerUndo(`${targetEdging} removed`, async () => {
+      offerUndo(`${shownAs} removed`, async () => {
         await deleted;
         const back = removed;
         if (!back) return;
         const putBack = (rows: BoardColourMemoryRow[], index: number) =>
           rows.map((row) =>
-            row.value === targetColour && !row.edgings.some((edging) => edging.value === targetEdging)
-              ? { ...row, edgings: insertAt(row.edgings, index, back) }
+            row.value === targetColour && !row[list].some((entry) => entry.value === targetEntry)
+              ? { ...row, [list]: insertAt(row[list], index, back) }
               : row,
           );
         setBoardColourMemory((prev) => putBack(prev, at));
-        await patchBoardColourMemory((rows) => putBack(rows, freshAt), "board-edging-restore-failed");
+        await patchBoardColourMemory((rows) => putBack(rows, freshAt), `board-${list}-restore-failed`);
       });
     }
     await deleted;
@@ -4415,6 +4455,15 @@ export default function CompanySettingsPage() {
       // through its own dedicated fetch-then-patch call instead.
       boardThicknesses: boardThicknesses.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0),
       boardFinishes: boardFinishes.map((v) => toStr(v)).filter(Boolean),
+      // (Its tapes; how many times each's been picked is counted from projects — edgeTapePicks — and never written here.)
+      edgeTapeLibrary: edgeTapeLibrary
+        .map((tape) => ({
+          id: tape.id,
+          name: toStr(tape.name),
+          thicknessMm: Number.parseFloat(String(tape.thicknessMm).replace(/,/g, ".")) || 0,
+          widthMm: Number.parseFloat(String(tape.widthMm).replace(/,/g, ".")) || 0,
+        }))
+        .filter((tape) => tape.name || tape.thicknessMm || tape.widthMm),
       contractors: contractors.map((v) => toStr(v)).filter(Boolean),
       contractorIcons: Object.fromEntries(
         contractors.map((v) => toStr(v)).filter((name) => name && contractorIcons[name]).map((name) => [name, contractorIcons[name]]),
@@ -4684,6 +4733,7 @@ export default function CompanySettingsPage() {
         projectTagUsage: { tags: projectTagUsage },
         boardThicknesses,
         boardFinishes,
+        edgeTapeLibrary,
         contractors,
         contractorIcons,
         roomNames,
@@ -5163,6 +5213,7 @@ export default function CompanySettingsPage() {
     projectTagUsage,
     boardThicknesses,
     boardFinishes,
+    edgeTapeLibrary,
     contractors,
     contractorIcons,
     roomNames,
@@ -5856,51 +5907,147 @@ export default function CompanySettingsPage() {
                       </button>
                     </div>
                   </Panel>
-                  <Panel title="Board colour memory" icon={Palette} description="Recorded automatically from your cutlists, with the edging tapes used on each colour.">
+                  <Panel title="Edge tape library" icon={Ruler} description="Edge tapes to pick for a board's Edging in Board Settings, or for any one edge of a piece on its drawing in the cutlist. The most picked come first.">
+                    <div className="space-y-1.5">
+                      {edgeTapeLibrary.length === 0 ? (
+                        <EmptyState compact icon={<Ruler size={16} />} title="No edge tapes yet" hint="Add the edge tapes you use, by colour, thickness and width." />
+                      ) : null}
+                      {edgeTapeLibrary.map((tape, idx) => (
+                        <div key={tape.id} className={`${listRowClass} max-sm:flex-wrap`}>
+                          <input
+                            value={tape.name}
+                            onChange={(e) => setEdgeTapeLibrary((prev) => prev.map((t, i) => (i === idx ? { ...t, name: e.target.value } : t)))}
+                            placeholder="Name or colour"
+                            aria-label="Edge tape name or colour"
+                            className={`${fieldInputClass} min-w-0 flex-1`}
+                          />
+                          <LengthField
+                            valueMm={tape.thicknessMm}
+                            onChangeMm={(mm) => setEdgeTapeLibrary((prev) => prev.map((t, i) => (i === idx ? { ...t, thicknessMm: mm } : t)))}
+                            unit={companyUnit}
+                            placeholder="Thickness"
+                            width={96}
+                          />
+                          <span style={{ color: "var(--text-muted)" }}>×</span>
+                          <LengthField
+                            valueMm={tape.widthMm}
+                            onChangeMm={(mm) => setEdgeTapeLibrary((prev) => prev.map((t, i) => (i === idx ? { ...t, widthMm: mm } : t)))}
+                            unit={companyUnit}
+                            placeholder="Width"
+                            width={96}
+                          />
+                          <span className={countPillClass} title="Times picked">{String(edgeTapePicks[tape.id] || 0)}</span>
+                          <button
+                            type="button"
+                            onClick={() => removeFromList(setEdgeTapeLibrary, idx, tape, `${tape.name.trim() || "Edge tape"} removed`)}
+                            className={dangerIconButtonClass}
+                            title="Remove"
+                          >
+                            <X size={15} />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setEdgeTapeLibrary((prev) => [
+                            ...prev,
+                            { id: `etp_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`, name: "", thicknessMm: "", widthMm: "" },
+                          ])
+                        }
+                        className={`${secondaryButtonClass} mt-1.5`}
+                      >
+                        <Plus size={14} /> Add edge tape
+                      </button>
+                    </div>
+                  </Panel>
+                  <Panel
+                    title="Board colour memory"
+                    icon={Palette}
+                    description="Recorded automatically from your cutlists, with the thicknesses, finishes and edging tapes used on each colour. Picking a colour in Board Settings fills in its most used ones."
+                  >
                     <div className="space-y-1.5">
                       {boardColourMemory.length === 0 ? (
                         <EmptyState compact icon={<Palette size={16} />} title="No colours recorded yet" hint="Colours appear here as they're used in cutlists." />
                       ) : null}
                       {boardColourMemory.map((row, idx) => {
                         const isExpanded = expandedBoardColourMemoryRows.has(row.value);
-                        const hasEdgings = row.edgings.length > 0;
+                        const hasDetails = row.edgings.length > 0 || row.thicknesses.length > 0 || row.finishes.length > 0;
+                        const toggle = () =>
+                          setExpandedBoardColourMemoryRows((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(row.value)) next.delete(row.value);
+                            else next.add(row.value);
+                            return next;
+                          });
+                        // Its thicknesses, finishes and edgings — each with how many times it's been used with this colour.
+                        const groups: Array<{ list: BoardColourMemoryList; title: string; shown: (value: string) => string }> = [
+                          { list: "thicknesses", title: "Thickness", shown: (value) => formatLength(value, companyUnit) },
+                          { list: "finishes", title: "Finish", shown: (value) => value },
+                          { list: "edgings", title: "Edging", shown: (value) => value },
+                        ];
                         return (
                           <div key={`board_colour_${idx}`}>
                             <div className={listRowClass}>
                               <button
                                 type="button"
-                                disabled={!hasEdgings}
-                                onClick={() =>
-                                  setExpandedBoardColourMemoryRows((prev) => {
-                                    const next = new Set(prev);
-                                    if (next.has(row.value)) next.delete(row.value);
-                                    else next.add(row.value);
-                                    return next;
-                                  })
-                                }
+                                disabled={!hasDetails}
+                                onClick={toggle}
+                                aria-expanded={isExpanded}
                                 className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] disabled:opacity-30"
                                 style={{ color: "var(--text-muted)" }}
-                                title={hasEdgings ? "Show edging tapes used with this colour" : "No edging tapes recorded yet"}
+                                title={hasDetails ? "Show the thicknesses, finishes and edging tapes used with this colour" : "Nothing recorded with this colour yet"}
                               >
                                 <ChevronDown size={15} style={{ transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 200ms ease" }} />
                               </button>
-                              <span className="min-w-0 flex-1 truncate text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{row.value}</span>
+                              <button
+                                type="button"
+                                disabled={!hasDetails}
+                                onClick={toggle}
+                                className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold disabled:cursor-default"
+                                style={{ color: "var(--text-main)" }}
+                              >
+                                {row.value}
+                              </button>
                               <span className={countPillClass} title="Times used">{String(row.count || "0")}</span>
                               <button type="button" onClick={() => void onDeleteBoardColourMemoryRow(row.value)} className={dangerIconButtonClass} title="Forget this colour">
                                 <X size={15} />
                               </button>
                             </div>
-                            {isExpanded && hasEdgings && (
-                              <div className="my-1.5 ml-8 grid gap-1 rounded-[12px] border border-dashed p-2 max-sm:ml-3" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)" }}>
-                                {row.edgings.map((edging, edgingIdx) => (
-                                  <div key={`board_edging_${idx}_${edgingIdx}`} className="flex items-center gap-2 px-1 text-[12.5px]">
-                                    <span className="min-w-0 flex-1 truncate" style={{ color: "var(--text-main)" }}>{edging.value}</span>
-                                    <span className={countPillClass} title="Times used">{String(edging.count || "0")}</span>
-                                    <button type="button" onClick={() => void onDeleteBoardEdgingMemoryRow(row.value, edging.value)} className={dangerIconButtonClass} title="Forget this edging">
-                                      <X size={14} />
-                                    </button>
-                                  </div>
-                                ))}
+                            {isExpanded && hasDetails && (
+                              <div className="my-1.5 ml-8 grid gap-1.5 rounded-[12px] border border-dashed px-2 py-1.5 max-sm:ml-3" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)" }}>
+                                {/* One row each — its title on the left, what's been used on the right (each counted, with its X). */}
+                                {groups
+                                  .filter((group) => row[group.list].length > 0)
+                                  .map((group) => (
+                                    <div key={`board_${group.list}_${idx}`} className="grid grid-cols-[76px_minmax(0,1fr)] items-start gap-2">
+                                      <p className="pt-[7px] text-[10.5px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                                        {group.title}
+                                      </p>
+                                      <div className="flex min-w-0 flex-wrap gap-1.5">
+                                        {row[group.list].map((entry, entryIdx) => (
+                                          <span
+                                            key={`board_${group.list}_${idx}_${entryIdx}`}
+                                            className="inline-flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-full border pl-2.5 pr-1 text-[12.5px]"
+                                            style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}
+                                          >
+                                            <span className="min-w-0 truncate" style={{ color: "var(--text-main)" }}>{group.shown(entry.value)}</span>
+                                            <span className={countPillClass} title={`Times used with ${row.value}`}>{String(entry.count || "0")}</span>
+                                            <button
+                                              type="button"
+                                              onClick={() => void onDeleteBoardColourMemoryEntry(row.value, group.list, entry.value, group.shown(entry.value))}
+                                              className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger-strong)]"
+                                              style={{ color: "var(--text-muted)" }}
+                                              title={`Forget this ${group.title.toLowerCase()}`}
+                                              aria-label={`Forget ${group.shown(entry.value)}`}
+                                            >
+                                              <X size={12} />
+                                            </button>
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ))}
                               </div>
                             )}
                           </div>

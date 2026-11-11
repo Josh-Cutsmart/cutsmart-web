@@ -184,10 +184,11 @@ export function GlassSwitch({
       }}
     >
       <span
-        className="absolute left-[3px] top-[3px] rounded-full shadow-[0_2px_6px_rgba(0,0,0,0.22)]"
+        className="cs-switch-knob absolute left-[3px] top-[3px] rounded-full shadow-[0_2px_6px_rgba(0,0,0,0.22)]"
         style={{
           // Inline, not the bg-white class: globals.css repaints .bg-white as the dark panel colour in
-          // dark mode, which would turn the knob into a dark dot on the dark off-track.
+          // dark mode, which would turn the knob into a dark dot on the dark off-track. (In dark mode .cs-switch-knob
+          // makes it the text's colour.)
           backgroundColor: "#FFFFFF",
           width: knob,
           height: knob,

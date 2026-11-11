@@ -121,6 +121,8 @@ export type PartLabel = {
   // The edges clashed (an X on each), and its clashing as the cutlist writes it.
   clashed: LabelEdge[];
   clashCode: string;
+  // An edge on a tape other than its board's (picked on its drawing in the cutlist): that tape's name, beside its X.
+  edgeNotes?: Partial<Record<LabelEdge, string>>;
   // A door's hinges: the edge they're on, its side (LH, RH, Top), and each — how far along (mm) from that edge's start
   // (its top, or its left on a top-hinged door) or its end, and that distance as written (see hingeMarksFromTheirEnds). Each has an
   // arrow on the door to the end it's measured from.
@@ -407,7 +409,8 @@ const ARROW_LANE_K = 1;
 // (each with where it goes, beside its edge) — and its clashing and hinge side under it. A Custom piece: its real outline
 // (its shape's), each banded run drawn heavier with an X across it, and how much is banded under it.
 function drawOutline(ops: LabelOp[], label: PartLabel, box: { x: number; y: number; w: number; h: number }, k: number) {
-  const markHalf = 1.15 * k;
+  // (Half a clashed edge's X across: small, so it marks the edge without crowding the piece.)
+  const markHalf = 0.75 * k;
   const hingeSize = 6.2 * k;
   const captionSize = 8.5 * k;
   const reserve = { top: markHalf, right: markHalf, bottom: markHalf, left: markHalf };
@@ -449,8 +452,8 @@ function drawOutline(ops: LabelOp[], label: PartLabel, box: { x: number; y: numb
   const oy = box.y + reserve.top + (availH - dh) / 2;
   // An X across an edge (or a run of one) at (cx, cy).
   const crossAt = (cx: number, cy: number) => {
-    ops.push({ kind: "line", x1: cx - markHalf, y1: cy - markHalf, x2: cx + markHalf, y2: cy + markHalf, stroke: INK, lineWidth: 0.45 });
-    ops.push({ kind: "line", x1: cx - markHalf, y1: cy + markHalf, x2: cx + markHalf, y2: cy - markHalf, stroke: INK, lineWidth: 0.45 });
+    ops.push({ kind: "line", x1: cx - markHalf, y1: cy - markHalf, x2: cx + markHalf, y2: cy + markHalf, stroke: INK, lineWidth: 0.35 });
+    ops.push({ kind: "line", x1: cx - markHalf, y1: cy + markHalf, x2: cx + markHalf, y2: cy - markHalf, stroke: INK, lineWidth: 0.35 });
   };
   if (shaped) {
     // Its shape's outline fitted onto the box the rectangle would be (the box round it is its Width × Height) — in
@@ -550,11 +553,21 @@ function drawOutline(ops: LabelOp[], label: PartLabel, box: { x: number; y: numb
     }
   }
 
-  // An X on each edge that's clashed, across its middle.
+  // An X on each edge that's clashed, across its middle — an edge on a different tape with that tape's name beside it,
+  // just inside the piece.
+  const noteSize = sideSize;
+  const noteH = noteSize * LABEL_PT * 0.75;
   for (const edge of shaped ? [] : label.clashed) {
     const cx = edge === "left" ? ox : edge === "right" ? ox + dw : ox + dw / 2;
     const cy = edge === "top" ? oy : edge === "bottom" ? oy + dh : oy + dh / 2;
     crossAt(cx, cy);
+    const note = String(label.edgeNotes?.[edge] ?? "").trim();
+    if (!note) continue;
+    const inset = markHalf + 0.5 * k;
+    if (edge === "top") ops.push({ kind: "text", x: cx, y: oy + inset + noteH, text: note, size: noteSize, bold: true, color: INK, align: "center" });
+    else if (edge === "bottom") ops.push({ kind: "text", x: cx, y: oy + dh - inset, text: note, size: noteSize, bold: true, color: INK, align: "center" });
+    else if (edge === "left") ops.push({ kind: "text", x: ox + inset, y: cy + noteH / 2, text: note, size: noteSize, bold: true, color: INK, align: "left" });
+    else ops.push({ kind: "text", x: ox + dw - inset, y: cy + noteH / 2, text: note, size: noteSize, bold: true, color: INK, align: "right" });
   }
 
   let frontOnDoor = false;

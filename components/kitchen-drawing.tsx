@@ -184,6 +184,8 @@ export type KitchenGaps = {
   tallTopGap: number;
   baseCabHeight: number;
   tallCabHeight: number;
+  // Its cabinets' kicks' height — the project's Foot Height (Production › Cabinetry). None: KICK_MM.
+  kickHeight?: number;
 };
 
 type Level = "base" | "wall";
@@ -284,6 +286,8 @@ const DEFAULT_BENCH: BenchSettings = { fronts: 20, panels: 20 };
 const HOME_VIEW: CabinetView = { yaw: -0.45, pitch: 0.32 };
 
 const KICK_MM = 150;
+// A kick's height: the project's Foot Height, or KICK_MM without one.
+const kickOf = (gaps: KitchenGaps) => (gaps.kickHeight && gaps.kickHeight > 0 ? gaps.kickHeight : KICK_MM);
 // How far a cabinet's kick sits back from its front.
 const KICK_SETBACK_MM = 60;
 // Where a face panel's false cabinet runs, in the frame of what it's swung off: from that one's side to the panel's far
@@ -580,7 +584,7 @@ function unitFrontSize(u: KitchenUnit, g: number, dg: number) {
     : { width: fronts.reduce((s, f) => s + f.width, 0) + (fronts.length - 1) * g, height: Math.max(...fronts.map((f) => f.height)) };
 }
 
-const wallZ0 = (gaps: KitchenGaps) => KICK_MM + gaps.baseCabHeight + BENCH_MM + WALL_GAP_MM;
+const wallZ0 = (gaps: KitchenGaps) => kickOf(gaps) + gaps.baseCabHeight + BENCH_MM + WALL_GAP_MM;
 // An existing cabinet: one made from its fronts, not a Cabinetry one.
 const isExisting = (item: KitchenItem) => item.kind === "box" && !item.unitId;
 
@@ -615,7 +619,8 @@ const hasKick = (item: KitchenItem, size: ItemSize) => (item.level === "base" ||
 // Lying flat, or as good as: its top and bottom corners too close to tell apart.
 const THIN_MM = 60;
 // How high its bottom corners are: a cabinet with a kick, the floor it stands on; else its own underside.
-const lowOf = (item: KitchenItem, size: ItemSize) => ((item.kind === "box" || item.kind === "custom") && hasKick(item, size) ? size.z0 - KICK_MM : size.z0);
+const lowOf = (item: KitchenItem, size: ItemSize, kick = KICK_MM) =>
+  (item.kind === "box" || item.kind === "custom") && hasKick(item, size) ? size.z0 - kick : size.z0;
 
 // A cabinet's size from what's in it (or the cutlist's, a Cabinetry one) — and the sums that make it, to show.
 function boxSize(item: KitchenItem, units: Map<string, KitchenUnit>, gaps: KitchenGaps, panelLeft: boolean, panelRight: boolean): ItemSize {
@@ -631,7 +636,7 @@ function boxSize(item: KitchenItem, units: Map<string, KitchenUnit>, gaps: Kitch
   const padR = panelRight ? g : g / 2;
   const frontT = all.length ? Math.max(...all.map((f) => f.thicknessMm)) : 18;
   const wall = item.level === "wall" && !tall;
-  const z0 = wall ? wallZ0(gaps) : KICK_MM;
+  const z0 = wall ? wallZ0(gaps) : kickOf(gaps);
   const depth = own?.depth || item.depthMm || (wall ? WALL_DEPTH : BASE_DEPTH);
   const base = { tall, g, topGap, padL, padR, frontT, z0, depth };
   const panelNote = panelLeft || panelRight ? [`A full ${g} gap at the end next to the panel — a panel can't leave one.`] : [];
@@ -779,7 +784,7 @@ function layoutKitchen(items: KitchenItem[], units: Map<string, KitchenUnit>, ga
     const nb = (next.left ? sizes.get(next.left) : undefined) ?? (next.right ? sizes.get(next.right) : undefined);
     const wall = item.level === "wall";
     const width = Math.max(1, Math.round(item.gapMm ?? 600));
-    const z0 = nb && !nb.tall ? nb.z0 : wall ? wallZ0(gaps) : KICK_MM;
+    const z0 = nb && !nb.tall ? nb.z0 : wall ? wallZ0(gaps) : kickOf(gaps);
     const height = nb && !nb.tall ? nb.height : wall ? 720 : gaps.baseCabHeight;
     sizes.set(item.id, {
       width,
@@ -805,7 +810,7 @@ function layoutKitchen(items: KitchenItem[], units: Map<string, KitchenUnit>, ga
     .map((sz) => Math.round(sz.z0 + sz.height));
   const runTop = baseTops.length
     ? Number(Object.entries(baseTops.reduce<Record<string, number>>((acc, z) => ({ ...acc, [z]: (acc[z] ?? 0) + 1 }), {})).sort((a, b) => b[1] - a[1] || Number(b[0]) - Number(a[0]))[0][0])
-    : KICK_MM + gaps.baseCabHeight;
+    : kickOf(gaps) + gaps.baseCabHeight;
   for (const item of items) {
     const u = item.unitId ? units.get(item.unitId) : undefined;
     if (item.kind === "custom") {
@@ -815,7 +820,7 @@ function layoutKitchen(items: KitchenItem[], units: Map<string, KitchenUnit>, ga
         width: b ? b.maxX - b.minX : 600,
         height: shape ? cabinetSettings(shape).height : 720,
         depth: b ? b.maxY - b.minY : 600,
-        z0: item.level === "wall" ? wallZ0(gaps) : KICK_MM,
+        z0: item.level === "wall" ? wallZ0(gaps) : kickOf(gaps),
         tall: false,
         frontT: u?.thicknessMm ?? 18,
         padL: 0,
@@ -1432,7 +1437,7 @@ function kitchenModel(
       putCut(`${id}:carcass`, w(rect(0, -D, W, 0)), size.z0, top, tint(CARCASS), see, solidsBut(item.id).filter((b) => !b.placeholder));
     } else put(`${id}:carcass`, w(rect(0, -D, W, 0)), size.z0, top, tint(CARCASS), see);
     // (Its kick, set back under it — and its bench.)
-    if (hasKick(item, size)) put(`${id}:kick`, w(rect(0, -D, W, -KICK_SETBACK_MM)), 0, KICK_MM, tint(CARCASS), see);
+    if (hasKick(item, size)) put(`${id}:kick`, w(rect(0, -D, W, -KICK_SETBACK_MM)), 0, kickOf(gaps), tint(CARCASS), see);
     if (hasBench(item, size)) {
       const faces = { front: item.fronts.length ? size.frontT : 0, back: -D, left: 0, right: W };
       bench(item.id, w(rect(0, -D, W, size.frontT + over.fronts)), top, ghost, { frame, x0: 0, x1: W, y0: -D, y1: size.frontT + over.fronts, faces });
@@ -2918,7 +2923,7 @@ export function KitchenDrawing({
       const rs = run ? baseLaid.sizes.get(run.id) : undefined;
       if (run && rf && rs) {
         const span = faceSpan(hit, hf, hs, rf, rs);
-        const at = planAt(KICK_MM / 2);
+        const at = planAt(kickOf(gaps) / 2);
         const x0 = dot(sub(at, rf.o), rot(rf.a, [1, 0]));
         const t = (x0 - span.lo) / Math.max(1e-6, span.hi - span.lo);
         return { target: { kind: "attach", to: hit.id, side: t < 0.5 ? "kick-left" : "kick-right" }, level: hit.level };
@@ -2927,8 +2932,8 @@ export function KitchenDrawing({
     if (hit && hs && hf && (u ? u.kind === "panel" : x.kind === "panel") && hit.kind === "box" && hitFace?.part.endsWith(":kick")) {
       const l = toWorld(hf, [0, -KICK_SETBACK_MM]);
       const r = toWorld(hf, [hs.width, -KICK_SETBACK_MM]);
-      const sl = projector.project([l[0], l[1], KICK_MM / 2]);
-      const sr = projector.project([r[0], r[1], KICK_MM / 2]);
+      const sl = projector.project([l[0], l[1], kickOf(gaps) / 2]);
+      const sr = projector.project([r[0], r[1], kickOf(gaps) / 2]);
       const along = sub(sr, sl);
       const t = dot(sub(point, sl), along) / Math.max(1e-6, dot(along, along));
       return { target: { kind: "attach", to: hit.id, side: t < 0.5 ? "kick-left" : "kick-right" }, level: hit.level };
@@ -3888,7 +3893,7 @@ export function KitchenDrawing({
           const isPivot = onCorner && !onLow;
           const at = toWorld(f, footprintCorner(print, { x, y }));
           const low = hasLow && (picked || onLow || pivotDrag) ? (() => {
-            const [sx, sy] = projector.project([at[0], at[1], lowOf(item, s2) - 2]);
+            const [sx, sy] = projector.project([at[0], at[1], lowOf(item, s2, kickOf(gaps)) - 2]);
             return [{ key: `${item.id}_${x}${y}_low`, ref: { id: item.id, corner: { x, y } as Pivot, low: true }, x: sx, y: sy, picked, pivot: onLow, fallback: false }];
           })() : [];
           if (!picked && !isPivot && !pivotDrag) return low;
@@ -3967,14 +3972,14 @@ export function KitchenDrawing({
     const zOf = (ref: CornerRef) => {
       const sz = laidNext.sizes.get(ref.id);
       const of = next.find((i) => i.id === ref.id);
-      return sz && of ? (ref.low ? lowOf(of, sz) : sz.z0 + sz.height) : null;
+      return sz && of ? (ref.low ? lowOf(of, sz, kickOf(gaps)) : sz.z0 + sz.height) : null;
     };
     const want = zOf(onto);
     const have = zOf(from);
     if (want !== null && have !== null && Math.abs(want - have) > 0.5) {
       // (Never through the floor: down as far as that, and no further.)
       const own = laidNext.sizes.get(item.id);
-      const by = Math.max(want - have, own ? -lowOf(next.find((i) => i.id === item.id) ?? item, own) : want - have);
+      const by = Math.max(want - have, own ? -lowOf(next.find((i) => i.id === item.id) ?? item, own, kickOf(gaps)) : want - have);
       const carried = descendants(next, item.id);
       // (A panel at bench or overhead height run off it follows by itself.)
       next = next.map((i) => (i.id === item.id || (carried.has(i.id) && (i.kind !== "panel" || laidNext.sizes.get(i.id)?.tall)) ? { ...i, lift: (i.lift ?? 0) + by } : i));

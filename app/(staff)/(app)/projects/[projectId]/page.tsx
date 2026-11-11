@@ -29,6 +29,25 @@ import { InitialMeasureCloseSummaryModal } from "@/components/initial-measure-cl
 import { ProductionCutlistCloseSummaryModal } from "@/components/production-cutlist-close-summary-modal";
 import { ProductionUnlockCountdown } from "@/components/production-unlock-countdown";
 import { QuoteDiscountAnswerBox, QuoteDiscountPrompt } from "@/components/quote-discount-box";
+import { PieceEdgesZoom, type PieceEdgeTapeOption } from "@/components/piece-edges-zoom";
+import { EdgeTapeMenu, type EdgeTapeMenuOption, type NewEdgeTape } from "@/components/edge-tape-menu";
+import {
+  clashingFromEdges,
+  differentTapeRuns,
+  edgesForSizeChange,
+  edgeSide,
+  edgeTapeLabel,
+  edgeTapesByPicks,
+  formatEdgeTapeMetres,
+  mostUsedEdgeTapeThickness,
+  normalizeEdgeTapeLibrary,
+  normalizeManualEdgeTapes,
+  type ManualEdgeTape,
+  type EdgeTape,
+  normalizeRowEdges,
+  resolveRowEdges,
+  type RowEdges,
+} from "@/lib/edge-tapes";
 import {
   QUOTE_DISCOUNT_ACCEPT_PERMISSION,
   QUOTE_DISCOUNT_CHANGED_EVENT,
@@ -111,6 +130,8 @@ import {
   fetchGridVersion,
   fetchGridVersions,
   fetchProjectQuoteDiscount,
+  addEdgeTapeToLibrary,
+  bumpEdgeTapePick,
   fetchProductComparisons,
   fetchProjectById,
   fetchProjectUpdatedAtMarker,
@@ -747,7 +768,21 @@ function quoteSafePixelString(value: string | undefined): string | undefined {
 }
 
 type BoardEdgingMemoryRow = { value: string; count: number };
-type BoardColourMemoryRow = { value: string; count: number; edgings?: BoardEdgingMemoryRow[] };
+type BoardColourMemoryRow = {
+  value: string;
+  count: number;
+  edgings?: BoardEdgingMemoryRow[];
+  // The thicknesses (mm) and finishes boards in this colour have been — Board Settings fills in the most used of each
+  // when the colour's picked (commitBoardColourChange).
+  thicknesses?: BoardEdgingMemoryRow[];
+  finishes?: BoardEdgingMemoryRow[];
+};
+// A colour's counted lists, by the board field each counts.
+const BOARD_COLOUR_MEMORY_LISTS = [
+  { list: "edgings", field: "edging" },
+  { list: "thicknesses", field: "thickness" },
+  { list: "finishes", field: "finish" },
+] as const;
 type ProductionBoardRow = {
   id: string;
   colour: string;
@@ -1376,6 +1411,45 @@ function clashedEdgeMm(
   return mm;
 }
 
+// What to order of an edge tape (Board Settings' Edgetape): its raw length, plus its excess at each end of each run, plus
+// the company's "add extra metres" rule for that much, rounded as Company Settings › Production › Edge Tape says. "" for none.
+type EdgetapeOrderSettings = {
+  excessPerEndMm?: unknown;
+  rules?: ReadonlyArray<{ upToMeters?: unknown; addMeters?: unknown }>;
+  roundEnabled?: unknown;
+  roundDirection?: unknown;
+  roundNearestMeters?: unknown;
+};
+// The Edge Tape card beside Board Settings: colour, thickness, width, metres used, metres with the excess — or, in a
+// narrow card (a phone), the thickness × width under the colour and just the two metres beside it.
+const EDGE_TAPE_CARD_GRID =
+  "grid grid-cols-[28px_minmax(0,1fr)_58px_72px] @min-[400px]:grid-cols-[28px_minmax(0,1fr)_56px_52px_56px_72px]";
+function edgetapeOrderMetresText(rawMm: number, runs: number, settings: EdgetapeOrderSettings): string {
+  const num = (value: unknown) => Math.max(0, Number.parseFloat(String(value ?? "").replace(/,/g, ".")) || 0);
+  const excessPerEndMm = num(settings.excessPerEndMm);
+  const rules = [...(settings.rules || [])]
+    .map((rule) => ({ upToMeters: num(rule.upToMeters), addMeters: num(rule.addMeters) }))
+    .filter((rule) => rule.upToMeters > 0 && rule.addMeters >= 0)
+    .sort((a, b) => a.upToMeters - b.upToMeters);
+  const roundEnabled = Boolean(settings.roundEnabled);
+  const roundDirection: "up" | "down" = settings.roundDirection === "down" ? "down" : "up";
+  const roundNearestMeters = num(settings.roundNearestMeters);
+  const baseMeters = (rawMm + excessPerEndMm * 2 * runs) / 1000;
+  let extraMeters = 0;
+  if (baseMeters > 0) {
+    const matchRule = rules.find((rule) => baseMeters <= rule.upToMeters);
+    if (matchRule) extraMeters = matchRule.addMeters;
+  }
+  let finalMeters = baseMeters + extraMeters;
+  if (finalMeters > 0 && roundEnabled && roundNearestMeters > 0) {
+    const ratio = finalMeters / roundNearestMeters;
+    finalMeters = (roundDirection === "down" ? Math.floor(ratio) : Math.ceil(ratio)) * roundNearestMeters;
+  }
+  if (!(finalMeters > 0)) return "";
+  const rounded = Math.round(Math.max(0, finalMeters) * 100) / 100;
+  return rounded % 1 === 0 ? String(Math.round(rounded)) : String(rounded.toFixed(2).replace(/\.?0+$/, ""));
+}
+
 // A cutlist row's lacquered area across its whole quantity, in mm² — the Design tab's Lacquer column formula.
 function lacqueredRowMm2(
   row: { height?: unknown; width?: unknown; depth?: unknown; clashing?: unknown; clashLeft?: unknown; clashRight?: unknown; shape?: CutlistShape },
@@ -1818,11 +1892,12 @@ function QuoteExtraToggleSwitch({
   checked: boolean;
   onChange: (checked: boolean) => void;
   disabled?: boolean;
-  // "large" matches the h-9 control height used by the board popup's dropdowns/inputs — the
-  // default stays untouched everywhere else (e.g. the Sales Room "included" toggle).
-  size?: "default" | "large";
+  // "large" matches the h-9 control height used by the board popup's dropdowns/inputs, "medium" the h-7 of Board
+  // Settings' own row — the default stays untouched everywhere else (e.g. the Sales Room "included" toggle).
+  size?: "default" | "medium" | "large";
 }) {
   const isLarge = size === "large";
+  const isMedium = size === "medium";
   return (
     <button
       type="button"
@@ -1830,15 +1905,19 @@ function QuoteExtraToggleSwitch({
       aria-checked={checked}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex shrink-0 items-center rounded-full border transition-colors disabled:opacity-50 ${isLarge ? "h-9 w-16" : "h-5 w-9"}`}
+      className={`relative inline-flex shrink-0 items-center rounded-full border transition-colors disabled:opacity-50 ${isLarge ? "h-9 w-16" : isMedium ? "h-7 w-12" : "h-5 w-9"}`}
       style={{
         borderColor: checked ? "var(--brand-strong)" : "var(--glass-border)",
         backgroundColor: checked ? "var(--brand-strong)" : "var(--panel-muted)",
       }}
     >
       <span
-        className={`inline-block rounded-full bg-white shadow transition-transform ${isLarge ? "h-7 w-7" : "h-3.5 w-3.5"}`}
-        style={{ transform: checked ? (isLarge ? "translateX(32px)" : "translateX(18px)") : (isLarge ? "translateX(4px)" : "translateX(2px)") }}
+        className={`cs-switch-knob inline-block rounded-full shadow transition-transform ${isLarge ? "h-7 w-7" : isMedium ? "h-5 w-5" : "h-3.5 w-3.5"}`}
+        style={{
+          transform: checked
+            ? isLarge ? "translateX(32px)" : isMedium ? "translateX(23px)" : "translateX(18px)"
+            : isLarge ? "translateX(4px)" : isMedium ? "translateX(3px)" : "translateX(2px)",
+        }}
       />
     </button>
   );
@@ -5829,6 +5908,8 @@ function normalizeBoardColourMemory(raw: unknown): BoardColourMemoryRow[] {
           value: toStr(item.value),
           count: Number(item.count ?? 0),
           edgings: normalizeBoardEdgingMemory(item.edgings),
+          thicknesses: normalizeBoardEdgingMemory(item.thicknesses),
+          finishes: normalizeBoardEdgingMemory(item.finishes),
         };
       })
       .filter((row) => row.value)
@@ -5844,6 +5925,8 @@ function normalizeBoardColourMemory(raw: unknown): BoardColourMemoryRow[] {
         value: toStr(item.value ?? item.colour ?? item.color),
         count: Number(item.count ?? 0),
         edgings: normalizeBoardEdgingMemory(item.edgings),
+        thicknesses: normalizeBoardEdgingMemory(item.thicknesses),
+        finishes: normalizeBoardEdgingMemory(item.finishes),
       };
     })
     .filter((row) => row.value)
@@ -5873,6 +5956,31 @@ function isLightHex(hex: string, threshold = 0.62): boolean {
   const b = Number.parseInt(safe.slice(5, 7), 16);
   const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
   return luminance > threshold;
+}
+
+// A board's sheet size shortened to its height in metres, as its bubble shows it: "2440 x 1220" → "2.4", 3000 → "3".
+function shortSheetHeight(sheetSize: string): string {
+  const mm = Number.parseFloat(String(sheetSize || "").split("x")[0]?.trim() || "");
+  return Number.isFinite(mm) && mm > 0 ? (Math.floor(mm / 100) / 10).toFixed(1).replace(/\.0$/, "") : "";
+}
+
+// That shortened size in a small bubble before a board's name — as the Cutlist Entry's board dropdown shows it
+// (BoardPillDropdown), for everywhere else a board's named. On a part's colour: that colour a little darker; else a light
+// tint of the text, so it shows on any panel.
+function BoardSizeBubble({ size, partColor, compact }: { size: string; partColor?: string; compact?: boolean }) {
+  if (!size) return null;
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center justify-center rounded-[999px] font-medium ${compact ? "h-4 min-w-[24px] px-1.5 text-[9px]" : "h-5 min-w-[28px] px-2 text-[10px]"}`}
+      style={
+        partColor
+          ? { backgroundColor: darkenHex(partColor, 0.15), color: isLightHex(partColor) ? "#000000" : "#FFFFFF" }
+          : { backgroundColor: "color-mix(in srgb, var(--text-main) 11%, transparent)", color: "var(--text-main)" }
+      }
+    >
+      {size}
+    </span>
+  );
 }
 
 function darkenHex(hex: string, amount: number): string {
@@ -6673,7 +6781,7 @@ function DrawerHeightDropdown({
         }}
       >
         <span ref={labelRef} className="min-w-0 flex-1 truncate leading-[1]">{displayValue}</span>
-        <ChevronDown size={compact ? 13 : 14} className="ml-2 shrink-0 self-center" />
+        <ChevronDown size={compact ? 13 : 14} className={`ml-2 shrink-0 self-center transition-transform duration-150 motion-reduce:transition-none ${open ? "rotate-180" : ""}`} />
       </button>
       {shouldExpand && hoverRect && (
         <div
@@ -6692,7 +6800,7 @@ function DrawerHeightDropdown({
           }}
         >
           <span className="whitespace-nowrap pr-2">{hoverPreview}</span>
-          <ChevronDown size={compact ? 13 : 14} className="ml-2 shrink-0 self-center" />
+          <ChevronDown size={compact ? 13 : 14} className={`ml-2 shrink-0 self-center transition-transform duration-150 motion-reduce:transition-none ${open ? "rotate-180" : ""}`} />
         </div>
       )}
       {open && !disabled && menuRect && typeof document !== "undefined" && createPortal(
@@ -7015,7 +7123,7 @@ function CompactPlainDropdown({
         className="pointer-events-auto h-6 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 pr-5 text-left text-[11px] text-[var(--text-main)] disabled:opacity-70"
       >
         <span className="truncate">{selected || placeholder}</span>
-        <ChevronDown size={12} className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[var(--text-main)]" />
+        <ChevronDown size={12} className={`pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[var(--text-main)] transition-transform duration-150 motion-reduce:transition-none ${open ? "rotate-180" : ""}`} />
       </button>
       {open && rect && !disabled && typeof document !== "undefined" && createPortal(
         <div className="fixed inset-0 pointer-events-auto" style={{ zIndex: 2147483647 }}>
@@ -7268,7 +7376,7 @@ function BoardPillDropdown({
             </span>
             <ChevronDown
               size={12}
-              className={`pointer-events-none absolute top-1/2 -translate-y-1/2 ${reserveRightIcon ? "right-8" : "right-1"}`}
+              className={`pointer-events-none absolute top-1/2 -translate-y-1/2 ${reserveRightIcon ? "right-8" : "right-1"} transition-transform duration-150 motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
             />
           </>
         ) : (
@@ -7284,7 +7392,7 @@ function BoardPillDropdown({
               )}
               <span className="truncate">{selectedLabel}</span>
             </span>
-            <ChevronDown size={14} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2" />
+            <ChevronDown size={14} className={`pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 transition-transform duration-150 motion-reduce:transition-none ${open ? "rotate-180" : ""}`} />
           </span>
         )}
       </button>
@@ -7366,6 +7474,12 @@ type GlassSelectDropdownProps = {
   disabled?: boolean;
   getOptionColor?: (option: string) => string | undefined;
   getLabel?: (option: string) => string;
+  // Shown before an option's label, in the menu and (for the picked one) the field — a board's size bubble.
+  getOptionPrefix?: (option: string) => React.ReactNode;
+  // Inside the field, at its right before the arrow — a measurement's unit ("mm"), as a text box with its unit has it.
+  fieldSuffix?: React.ReactNode;
+  // What the field shows of the picked option, where it differs from the menu's (getLabel) — "18" beside its unit.
+  getFieldLabel?: (option: string) => string;
   title?: string;
   fullWidth?: boolean;
   noTruncate?: boolean;
@@ -7499,7 +7613,7 @@ function StaffPickerDropdown({
             <span className="min-w-0 truncate" style={{ color: "var(--text-muted)" }}>{emptyLabel || "No one"}</span>
           </>
         )}
-        <ChevronDown size={13} className="ml-auto shrink-0" style={{ color: "var(--text-muted)" }} />
+        <ChevronDown size={13} className={`ml-auto shrink-0 transition-transform duration-150 motion-reduce:transition-none ${open ? "rotate-180" : ""}`} style={{ color: "var(--text-muted)" }} />
       </button>
       {open && rect && !disabled && typeof document !== "undefined" && createPortal(
         <div
@@ -7583,7 +7697,7 @@ function StaffPickerDropdown({
 // control); pass fullWidth when replacing a <select> that filled a grid/table cell via w-full —
 // that class alone only reaches the inner button, not this wrapper, so width:100% would otherwise
 // resolve against an auto-sized parent and collapse back to content width.
-function GlassSelectDropdown({ value, options, onChange, className, style, disabled, getOptionColor, getLabel, title, fullWidth, noTruncate }: GlassSelectDropdownProps) {
+function GlassSelectDropdown({ value, options, onChange, className, style, disabled, getOptionColor, getLabel, getOptionPrefix, fieldSuffix, getFieldLabel, title, fullWidth, noTruncate }: GlassSelectDropdownProps) {
   const [open, setOpen] = useState(false);
   const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
   const [hoveredOption, setHoveredOption] = useState<string | null>(null);
@@ -7652,8 +7766,12 @@ function GlassSelectDropdown({ value, options, onChange, className, style, disab
         className={`inline-flex items-center justify-between ${fullWidth ? "w-full" : ""} ${className ?? ""}`}
         style={style}
       >
-        <span className={noTruncate ? "whitespace-nowrap" : "truncate"}>{getLabel ? getLabel(value) : value}</span>
-        <ChevronDown size={13} className="ml-1 shrink-0" />
+        {value && getOptionPrefix ? <span className="mr-1.5 inline-flex shrink-0">{getOptionPrefix(value)}</span> : null}
+        <span className={`${noTruncate ? "whitespace-nowrap" : "truncate"} ${fieldSuffix ? "min-w-0 flex-1 text-left" : ""}`}>
+          {getFieldLabel ? getFieldLabel(value) : getLabel ? getLabel(value) : value}
+        </span>
+        {fieldSuffix ? <span className="ml-1 shrink-0" style={{ color: "var(--text-muted)" }}>{fieldSuffix}</span> : null}
+        <ChevronDown size={13} className={`ml-1 shrink-0 transition-transform duration-150 motion-reduce:transition-none ${open ? "rotate-180" : ""}`} />
       </button>
       {open && rect && !disabled && typeof document !== "undefined" && createPortal(
         <div
@@ -7684,6 +7802,7 @@ function GlassSelectDropdown({ value, options, onChange, className, style, disab
                 {optionColor && (
                   <span className="mr-2 h-4 w-[3px] shrink-0 rounded-full" style={{ backgroundColor: optionColor }} />
                 )}
+                {getOptionPrefix ? <span className="mr-2 inline-flex shrink-0">{getOptionPrefix(opt)}</span> : null}
                 <span className="truncate">{getLabel ? getLabel(opt) : opt}</span>
               </button>
             );
@@ -8248,6 +8367,8 @@ function serializeCutlistRowsForStorage(
         hingesUp: normalizeDoorHingeValues(row.hingesUp),
         hingesDown: normalizeDoorHingeValues(row.hingesDown),
         hingeSide: normalizeHingeSideValue(row.hingeSide),
+        // (Its edges as picked on its drawing — which exactly, and each one's tape.)
+        ...(normalizeRowEdges(row.edges) ? { Edges: normalizeRowEdges(row.edges) } : {}),
         Information: row.information,
         Grain: String(row.grainValue || (row.grain ? "Yes" : "")),
         includeInNesting: row.includeInNesting !== false,
@@ -8301,6 +8422,7 @@ function serializeCutlistRowsSnapshot(rows: CutlistRow[]) {
         hingesUp: normalizeDoorHingeValues(row.hingesUp),
         hingesDown: normalizeDoorHingeValues(row.hingesDown),
         hingeSide: normalizeHingeSideValue(row.hingeSide),
+        edges: normalizeRowEdges(row.edges) ?? null,
         information: String(row.information ?? ""),
         grain: Boolean(row.grain),
         grainValue: String(row.grainValue ?? ""),
@@ -10106,47 +10228,24 @@ export default function ProjectDetailsPage() {
     () => document.querySelector<HTMLElement>('[data-board-suggestions-menu="true"]'),
     () => boardColourInputRefs.current[activeBoardColourSuggestionsRowId ?? ""] ?? null,
   );
-  // Same combo-box pattern as Colour above, but suggestions are ranked per the row's OWN colour
-  // (see boardEdgingSuggestionsForColour) rather than globally.
-  const boardEdgingEditStartRef = useRef<Record<string, string>>({});
-  const boardEdgingInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
-  const [activeBoardEdgingSuggestionsRowId, setActiveBoardEdgingSuggestionsRowId] = useState<string | null>(null);
-  const [boardEdgingDropdownRect, setBoardEdgingDropdownRect] = useState<{ left: number; top: number; width: number } | null>(null);
-  useEffect(() => {
-    if (!activeBoardEdgingSuggestionsRowId) {
-      setBoardEdgingDropdownRect(null);
+  // A board's Edging: a field showing its tape's colour, opening the edge tape picker under it (EdgeTapeMenu — the same as a
+  // piece's edge in the cutlist: a search, the + for a new tape, Matching and the library). Which board's is open, where.
+  const [edgingMenu, setEdgingMenu] = useState<{ rowId: string; rect: DOMRect } | null>(null);
+  const edgingMenuTriggerRef = useRef<HTMLElement | null>(null);
+  const closeEdgingMenu = useCallback(() => setEdgingMenu(null), []);
+  const toggleEdgingMenu = (rowId: string, el: HTMLElement) => {
+    if (edgingMenu?.rowId === rowId) {
+      setEdgingMenu(null);
       return;
     }
-    const refreshBoardEdgingDropdownRect = () => {
-      const el = boardEdgingInputRefs.current[activeBoardEdgingSuggestionsRowId];
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      setBoardEdgingDropdownRect({ left: r.left, top: r.bottom + 2, width: r.width });
-    };
-    refreshBoardEdgingDropdownRect();
-    window.addEventListener("resize", refreshBoardEdgingDropdownRect);
-    window.addEventListener("scroll", refreshBoardEdgingDropdownRect, true);
-    // See boardColourDropdownRect's own effect above for why visualViewport needs its own
-    // listeners too, separate from window's.
-    window.visualViewport?.addEventListener("resize", refreshBoardEdgingDropdownRect);
-    window.visualViewport?.addEventListener("scroll", refreshBoardEdgingDropdownRect);
-    return () => {
-      window.removeEventListener("resize", refreshBoardEdgingDropdownRect);
-      window.removeEventListener("scroll", refreshBoardEdgingDropdownRect, true);
-      window.visualViewport?.removeEventListener("resize", refreshBoardEdgingDropdownRect);
-      window.visualViewport?.removeEventListener("scroll", refreshBoardEdgingDropdownRect);
-    };
-  }, [activeBoardEdgingSuggestionsRowId]);
-  useKeepMenuInView(
-    Boolean(activeBoardEdgingSuggestionsRowId && boardEdgingDropdownRect),
-    () => document.querySelector<HTMLElement>('[data-board-suggestions-menu="true"]'),
-    () => boardEdgingInputRefs.current[activeBoardEdgingSuggestionsRowId ?? ""] ?? null,
-  );
-  // The Colour/Edging suggestion lists follow the same outside-press rule as every other dropdown
+    edgingMenuTriggerRef.current = el;
+    setEdgingMenu({ rowId, rect: el.getBoundingClientRect() });
+  };
+  // The Colour suggestion list follows the same outside-press rule as every other dropdown
   // here: a press anywhere but the list or its own text box closes it without also acting on what it
   // landed on. (Pressing another row's box still moves into that box — focus isn't a click.)
   useEffect(() => {
-    if (!activeBoardColourSuggestionsRowId && !activeBoardEdgingSuggestionsRowId) return;
+    if (!activeBoardColourSuggestionsRowId) return;
     const onDocPointerDown = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : null;
       if (!target) return;
@@ -10154,12 +10253,11 @@ export default function ProjectDetailsPage() {
       const list = document.querySelector('[data-board-suggestions-menu="true"]');
       if (!list || list.contains(target) || target === document.activeElement) return;
       setActiveBoardColourSuggestionsRowId(null);
-      setActiveBoardEdgingSuggestionsRowId(null);
       swallowNextClick();
     };
     document.addEventListener("pointerdown", onDocPointerDown);
     return () => document.removeEventListener("pointerdown", onDocPointerDown);
-  }, [activeBoardColourSuggestionsRowId, activeBoardEdgingSuggestionsRowId]);
+  }, [activeBoardColourSuggestionsRowId]);
   const [, setProductionCutlist] = useState<Cutlist | null>(null);
   const [cutlistRows, setCutlistRows] = useState<CutlistRow[]>([]);
   const cutlistRowsJsonRef = useRef("");
@@ -10284,6 +10382,8 @@ export default function ProjectDetailsPage() {
     quantity: string;
     clashing: string;
     informationLines: string[];
+    // Whose they are (for their switches).
+    infoRow?: { id: string; sourceRowId?: string };
   } | null>(null);
   const [isCncMobileRowDetailOpen, setIsCncMobileRowDetailOpen] = useState(false);
   const [cncMobileRowDetailOrigin, setCncMobileRowDetailOrigin] = useState<GlassModalOrigin>(null);
@@ -10337,6 +10437,52 @@ export default function ProjectDetailsPage() {
   const wasCncFullscreenRef = useRef(false);
   const [cncCollapsedGroups, setCncCollapsedGroups] = useState<Record<string, boolean>>({});
   const [cncVisibilityMap, setCncVisibilityMap] = useState<Record<string, boolean>>({});
+  // CNC Cutlist: information lines left out of its exports (each line's switch, on hover) — by part (its cutlist row's id),
+  // the lines as written. Still shown, greyed and crossed off. Saved with the project (projectSettings.cncInfoOff), so
+  // they stay off; Show All puts them all back. While a change is being saved, it's shown straight away (cncInfoOffPending).
+  const cncInfoOffSaved = useMemo<Record<string, string[]>>(() => {
+    const raw = ((project?.projectSettings ?? {}) as Record<string, unknown>).cncInfoOff;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const out: Record<string, string[]> = {};
+    for (const [rowId, lines] of Object.entries(raw as Record<string, unknown>)) {
+      const kept = Array.isArray(lines) ? lines.map((line) => String(line ?? "").trim()).filter(Boolean) : [];
+      if (rowId && kept.length) out[rowId] = Array.from(new Set(kept));
+    }
+    return out;
+  }, [project?.projectSettings]);
+  const [cncInfoOffPending, setCncInfoOffPending] = useState<Record<string, string[]> | null>(null);
+  const cncInfoOffSaveSeqRef = useRef(0);
+  const cncInfoOffByRow = cncInfoOffPending ?? cncInfoOffSaved;
+  const saveCncInfoOff = async (next: Record<string, string[]>) => {
+    if (!project) return;
+    const seq = ++cncInfoOffSaveSeqRef.current;
+    setCncInfoOffPending(next);
+    const currentSettings = (project.projectSettings ?? {}) as Record<string, unknown>;
+    const nextSettings: Record<string, unknown> = { ...currentSettings, cncInfoOff: next };
+    const ok = await updateProjectPatch(project, { projectSettings: nextSettings, projectSettingsJson: JSON.stringify(nextSettings) });
+    if (ok) settleProjectSettings(currentSettings, nextSettings);
+    // (Only the latest change lets go of what's shown — an earlier one finishing doesn't undo a later one on screen.)
+    if (seq === cncInfoOffSaveSeqRef.current) setCncInfoOffPending(null);
+  };
+  const cncInfoKeyOf = (row: { id?: string; sourceRowId?: string }) => String(row.sourceRowId || row.id || "");
+  const isCncInfoLineOff = (row: { id?: string; sourceRowId?: string }, line: string) =>
+    Boolean(line.trim()) && (cncInfoOffByRow[cncInfoKeyOf(row)] ?? []).includes(line.trim());
+  // A part's information as the exports have it: without the lines switched off.
+  const cncExportInfoLines = (row: { id?: string; sourceRowId?: string; information?: string }) =>
+    informationLinesFromValue(String(row.information ?? "")).filter((line) => !isCncInfoLineOff(row, line));
+  const cncExportInformation = (row: { id?: string; sourceRowId?: string; information?: string }) =>
+    informationValueFromLines(cncExportInfoLines(row));
+  const toggleCncInfoLine = (row: { id?: string; sourceRowId?: string }, line: string) => {
+    const key = cncInfoKeyOf(row);
+    const text = line.trim();
+    if (!key || !text) return;
+    const now = cncInfoOffByRow[key] ?? [];
+    const nextLines = now.includes(text) ? now.filter((entry) => entry !== text) : [...now, text];
+    const next = { ...cncInfoOffByRow };
+    if (nextLines.length) next[key] = nextLines;
+    else delete next[key];
+    void saveCncInfoOff(next);
+  };
   const [nestingSearch, setNestingSearch] = useState("");
   // Still used by the embedded (non-fullscreen) Production-tab Nesting preview's own Sheets/
   // Visibility tab switcher — the FULLSCREEN view below has its own separate
@@ -11725,7 +11871,7 @@ export default function ProjectDetailsPage() {
     const longest = Math.max(0, ...boardFinishOptions.map((opt) => opt.length));
     return Math.max(80, Math.ceil(longest * 7 + 43));
   }, [boardFinishOptions]);
-  const boardSettingsRowGridTemplate = `28px minmax(0,1fr) 80px ${boardFinishColumnPx}px 80px 50px 60px 150px 45px 70px`;
+  const boardSettingsRowGridTemplate = `28px minmax(100px,1fr) 80px ${boardFinishColumnPx}px 80px 50px 60px 150px 45px 70px`;
   const sheetSizeOptions = useMemo(
     () => normalizeSheetSizes(companyDoc?.sheetSizes),
     [companyDoc?.sheetSizes],
@@ -11742,35 +11888,87 @@ export default function ProjectDetailsPage() {
     () => boardColourMemory.map((row) => row.value),
     [boardColourMemory],
   );
-  // Global fallback for a colour with no edging history of its own yet: every tape ever used,
-  // anywhere, ranked by total usage across all colours combined.
-  const boardEdgingGlobalSuggestions = useMemo(() => {
-    const totals = new Map<string, number>();
-    for (const colourRow of boardColourMemory) {
-      for (const edgingRow of colourRow.edgings ?? []) {
-        totals.set(edgingRow.value, (totals.get(edgingRow.value) ?? 0) + edgingRow.count);
-      }
-    }
-    return Array.from(totals.entries())
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .map(([value]) => value);
-  }, [boardColourMemory]);
-  // Always the full cross-colour tape list (company settings keeps each colour's own counts
-  // separate, but the dropdown itself isn't scoped to one colour) — just with this row's own
-  // colour's most-used tapes bubbled to the top, so its own history is easy to spot without
-  // hiding everything else.
-  const boardEdgingSuggestionsForColour = (colour: string): string[] => {
-    const key = String(colour || "").trim().toLowerCase();
-    const colourRow = key ? boardColourMemory.find((row) => row.value.trim().toLowerCase() === key) : undefined;
-    const own = (colourRow?.edgings ?? []).map((row) => row.value);
-    const ownKeys = new Set(own.map((value) => value.toLowerCase()));
-    const rest = boardEdgingGlobalSuggestions.filter((value) => !ownKeys.has(value.toLowerCase()));
-    return [...own, ...rest];
+  // The company's edge tape library (Company Settings › Materials & Boards — lib/edge-tapes.ts), most picked first — this
+  // session's own picks counted straight away, as well as the company's.
+  const edgeTapeLibrary = useMemo(() => normalizeEdgeTapeLibrary((companyDoc as Record<string, unknown> | null)?.edgeTapeLibrary), [companyDoc]);
+  const [edgeTapePicksHere, setEdgeTapePicksHere] = useState<Record<string, number>>({});
+  const edgeTapePicksAll = useMemo(() => {
+    const saved = ((companyDoc as Record<string, unknown> | null)?.edgeTapePicks ?? {}) as Record<string, unknown>;
+    const picks: Record<string, number> = {};
+    for (const tape of edgeTapeLibrary) picks[tape.id] = (Number(saved[tape.id]) || 0) + (edgeTapePicksHere[tape.id] || 0);
+    return picks;
+  }, [companyDoc, edgeTapeLibrary, edgeTapePicksHere]);
+  const edgeTapesSorted = useMemo(() => edgeTapesByPicks(edgeTapeLibrary, edgeTapePicksAll), [edgeTapeLibrary, edgeTapePicksAll]);
+  // What a tape added from a piece's drawing starts with as its Thickness: the thickness picked most across the library.
+  const mostUsedEdgeTapeThicknessMm = useMemo(() => {
+    const mm = mostUsedEdgeTapeThickness(edgeTapeLibrary, edgeTapePicksAll);
+    return mm > 0 ? String(mm) : "";
+  }, [edgeTapeLibrary, edgeTapePicksAll]);
+  const pieceEdgeTapeOptions = useMemo<PieceEdgeTapeOption[]>(
+    () => edgeTapesSorted.map((tape) => ({ id: tape.id, name: tape.name || edgeTapeLabel(tape), label: edgeTapeLabel(tape) })),
+    [edgeTapesSorted],
+  );
+  const edgeTapeLabelById = useMemo(() => new Map(edgeTapesSorted.map((tape) => [tape.id, edgeTapeLabel(tape)])), [edgeTapesSorted]);
+  const edgeTapeNameById = useMemo(() => new Map(edgeTapesSorted.map((tape) => [tape.id, tape.name || edgeTapeLabel(tape)])), [edgeTapesSorted]);
+  // A tape picked (for a board's Edging, or a piece's edge): one more on its count, so it moves up the lists.
+  const pickEdgeTape = (tapeId: string) => {
+    if (!tapeId) return;
+    setEdgeTapePicksHere((prev) => ({ ...prev, [tapeId]: (prev[tapeId] || 0) + 1 }));
+    const companyId = String(project?.companyId || "").trim();
+    if (companyId) void bumpEdgeTapePick(companyId, tapeId);
   };
-  const topEdgingForColour = (colour: string): string => {
+  // A tape added from a piece's drawing (its edge menu's +): into the company's library for good, and here straight away —
+  // or, the library already having one the same (name and size), that one. Its id, for the edge it was added for.
+  const addEdgeTapeHere = (input: { name: string; thicknessMm: number; widthMm: number }): string => {
+    const name = String(input.name || "").trim();
+    const thicknessMm = Number(input.thicknessMm) > 0 ? Number(input.thicknessMm) : 0;
+    const widthMm = Number(input.widthMm) > 0 ? Number(input.widthMm) : 0;
+    const same = edgeTapeLibrary.find(
+      (tape) => tape.name.trim().toLowerCase() === name.toLowerCase() && tape.thicknessMm === thicknessMm && tape.widthMm === widthMm,
+    );
+    if (same) return same.id;
+    const tape = { id: `etp_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`, name, thicknessMm, widthMm };
+    setCompanyDoc((prev) => {
+      const list = Array.isArray(prev?.edgeTapeLibrary) ? (prev?.edgeTapeLibrary as unknown[]) : [];
+      return { ...(prev ?? {}), edgeTapeLibrary: [...list, tape] };
+    });
+    const companyId = String(project?.companyId || "").trim();
+    if (companyId) void addEdgeTapeToLibrary(companyId, tape);
+    return tape.id;
+  };
+  // Board Settings' Edging menu: Matching, then the library's tapes (most picked first) — given the board's thickness,
+  // only those wider than it (a 25mm board doesn't offer 22mm tape; a tape with no width kept). Each picked by its label
+  // (what a board's Edging holds), and what the board has now kept in the list even when it isn't one of them.
+  const boardEdgingMenuOptions = (current: string, boardThickness?: unknown): EdgeTapeMenuOption[] => {
+    const thicknessMm = Number.parseFloat(String(boardThickness ?? "").replace(/,/g, "."));
+    const tooNarrow = (tape: EdgeTape) => Number.isFinite(thicknessMm) && thicknessMm > 0 && tape.widthMm > 0 && tape.widthMm <= thicknessMm;
+    const options: EdgeTapeMenuOption[] = [
+      { id: "Matching", label: "Matching" },
+      ...edgeTapesSorted.filter((tape) => !tooNarrow(tape)).map((tape) => ({ id: edgeTapeLabel(tape), label: edgeTapeLabel(tape) })),
+    ];
+    const now = String(current || "").trim();
+    if (now && !options.some((option) => option.id.toLowerCase() === now.toLowerCase())) options.splice(1, 0, { id: now, label: now });
+    return options;
+  };
+  // What a board's Edging field shows: just the tape's colour (its name) — "Black", not "Black (1 × 22mm)".
+  const boardEdgingShownName = (value: string): string => {
+    const now = String(value || "").trim();
+    const tape = now ? edgeTapesSorted.find((entry) => edgeTapeLabel(entry).toLowerCase() === now.toLowerCase()) : undefined;
+    return tape ? tape.name || now : now;
+  };
+  // A tape added from a board's Edging menu (its +): into the library, and its label back for the board's Edging.
+  const addTapeForEdging = (tape: NewEdgeTape): string => {
+    const id = addEdgeTapeHere(tape);
+    const existing = edgeTapeLibrary.find((entry) => entry.id === id);
+    if (!existing) pickEdgeTape(id);
+    return edgeTapeLabel(existing ?? { name: tape.name.trim(), thicknessMm: tape.thicknessMm > 0 ? tape.thicknessMm : 0, widthMm: tape.widthMm > 0 ? tape.widthMm : 0 });
+  };
+  const topEdgingForColour = (colour: string): string => topBoardMemoryValueForColour(colour, "edgings");
+  // A colour's most used edging, thickness or finish (the colour memory's lists are kept most used first).
+  const topBoardMemoryValueForColour = (colour: string, list: "edgings" | "thicknesses" | "finishes"): string => {
     const key = String(colour || "").trim().toLowerCase();
     const colourRow = key ? boardColourMemory.find((row) => row.value.trim().toLowerCase() === key) : undefined;
-    return colourRow?.edgings?.[0]?.value ?? "";
+    return colourRow?.[list]?.[0]?.value ?? "";
   };
   const companyTagSuggestions = useMemo(
     () => normalizeProjectTagUsage((companyDoc?.projectTagUsage ?? {}) as Record<string, unknown>),
@@ -12194,6 +12392,7 @@ export default function ProjectDetailsPage() {
             drawerWeights: normalizeDrawerWeights(item.DrawerWeights ?? item.drawerWeights),
             // A Custom part type's piece: its shape, as Production's rows keep it (serializeCutlistRowsForStorage's Shape).
             shape: normalizeCutlistShape(item.Shape ?? item.shape),
+            edges: normalizeRowEdges(item.Edges ?? item.edges),
             information: String(item.Information ?? item.information ?? ""),
             grain: grainParsed.grain,
             grainValue: grainParsed.grainValue,
@@ -12246,10 +12445,7 @@ export default function ProjectDetailsPage() {
       if (!key) continue;
       const label = boardBaseLabelFromRow(row);
       const sheet = String(row.sheetSize || "").trim();
-      const mm = Number.parseFloat(sheet.split("x")[0]?.trim() || "");
-      const size = Number.isFinite(mm) && mm > 0
-        ? (Math.floor(mm / 100) / 10).toFixed(1).replace(/\.0$/, "")
-        : "";
+      const size = shortSheetHeight(sheet);
       out[key] = {
         label,
         sheet,
@@ -12425,19 +12621,6 @@ export default function ProjectDetailsPage() {
     if (matchesGrainDimension(g, depth, "depth")) return "depth";
     return null;
   };
-  const formatGrainColumnValue = (
-    grainValue: string,
-    height: string,
-    width: string,
-    depth: string,
-  ) => {
-    const g = String(grainValue ?? "").trim();
-    if (!g) return "";
-    const axis = resolveGrainAxis(g, height, width, depth);
-    if (!axis) return g;
-    const prefix = axis === "height" ? "H:" : axis === "width" ? "W:" : "D:";
-    return /^[HWD]\s*:/i.test(g) ? `${prefix}${g.replace(/^[HWD]\s*:\s*/i, "").trim()}` : `${prefix}${g}`;
-  };
   type GrainCandidateRowLike = Pick<CutlistRow, "partType" | "height" | "width" | "depth"> &
     Partial<Pick<CutlistRow, "doorMode" | "doorFrontHeights" | "doorFrontWidths" | "grainValue" | "board">>;
   // A front-bank (configured door/drawer) row splits ONE of height/width across per-front arrays
@@ -12510,13 +12693,12 @@ export default function ProjectDetailsPage() {
   // row's raw grainValue, so without this they'd disagree with what the toggle visually shows
   // until the user clicks it once. This mirrors that same fallback for those checks.
   const effectiveGrainValueForRow = (rowLike: GrainCandidateRowLike): string => {
+    // A board whose Grain is off: no grain shown (or defaulted) — the toggle isn't there either. The piece keeps the
+    // direction it had, so it's back the moment the board's Grain is switched on again.
+    if (!productionBoardAllowsGrainForValue(String(rowLike.board ?? "").trim())) return "";
     const stored = String(rowLike.grainValue ?? "").trim();
     const choices = grainDimensionChoicesForRow(rowLike);
     if (choices.some((c) => c.value === stored)) return stored;
-    // Only default to the first candidate when the toggle would actually be showing — a board
-    // that doesn't allow grain never renders GrainDimensionToggle at all, so there's no "first
-    // option" being visually selected to stay in sync with.
-    if (!productionBoardAllowsGrainForValue(String(rowLike.board ?? "").trim())) return "";
     return choices[0]?.value ?? "";
   };
   const renderSvgGrainIndicators = ({
@@ -12724,6 +12906,24 @@ export default function ProjectDetailsPage() {
       return Math.abs(gn - dn) < 0.001;
     }
     return g.toLowerCase() === d.toLowerCase();
+  };
+  // A CNC Cutlist row's grain: the dimension it runs along — bold and underlined there and in its exports — and whether
+  // that's the piece's long or short side, for its Grain column ("Long" / "Short"). As the production cutlist shows it: a
+  // grain never picked runs along its first choice (effectiveGrainValueForRow). Nothing on a board without grain.
+  const cncGrainAxisOf = (row: CutlistRow): "height" | "width" | "depth" | null => {
+    if (!boardGrainFor(String(row.board || "").trim())) return null;
+    const grain = effectiveGrainValueForRow(row);
+    if (!grain) return null;
+    return (["height", "width", "depth"] as const).find((key) => matchesGrainDimension(grain, String(row[key] ?? ""), key)) ?? null;
+  };
+  const cncGrainLongOrShort = (row: CutlistRow): string => {
+    const axis = cncGrainAxisOf(row);
+    if (!axis) return "";
+    const numberOf = (value: unknown) => Number.parseFloat(String(value ?? "").match(/-?\d+(?:\.\d+)?/)?.[0] ?? "");
+    const sizes = (["height", "width", "depth"] as const).map((key) => numberOf(row[key])).filter((n) => Number.isFinite(n) && n > 0);
+    const along = numberOf(row[axis]);
+    if (!Number.isFinite(along) || !sizes.length) return "";
+    return along >= Math.max(...sizes) ? "Long" : "Short";
   };
 
   // For a front-bank row, height/width is split across every front rather than living on a single
@@ -13817,6 +14017,14 @@ export default function ProjectDetailsPage() {
   // The shape a row's cut to: its own — or, a Custom row that's never had one drawn, a rectangle at its size. null: an
   // ordinary part.
   const cutlistRowShape = (row: Partial<CutlistRow>) => shapeForCutlistRow(row, isCustomPartType(String(row.partType || "")));
+  // A piece whose edges can be picked on its drawing (lib/edge-tapes.ts): a plain one — not a cabinet, a drawer, a door made
+  // up of fronts, nor a shaped piece (its banding's its shape's).
+  const canDrawPieceEdges = (row: Partial<CutlistRow>) => {
+    const partType = String(row.partType || "");
+    if (isCabinetryPartType(partType) || isDrawerPartType(partType)) return false;
+    if (isDoorPartType(partType) && normalizeDoorModeValue(row.doorMode) !== "manual") return false;
+    return !row.shape && !cutlistRowShape(row);
+  };
   // A Custom piece (it has a shape, or its part type is a Custom one) — in the cutlists' one "Custom" table.
   const isCustomCutlistRow = (row: Partial<CutlistRow>) => Boolean(row.shape) || isCustomPartType(String(row.partType || ""));
   // The table a row's in, in the Cutlist Lists (Production and Initial Measure, desktop and phone): its part type's — a
@@ -16945,7 +17153,7 @@ export default function ProjectDetailsPage() {
     const topGap = Math.max(0, toNum(String(row.doorTopGap ?? resolvedTopGap)));
     const betweenGap = Math.max(0, toNum(String(row.doorBetweenGap ?? resolvedBetweenGap)));
     const panelGap = Math.max(0, toNum(String(projectGapAllowancesDraft.baseVerticalGapDoorsPanels ?? "")));
-    const grainSource = String(row.grainValue ?? "").trim();
+    const grainSource = productionBoardAllowsGrainForValue(String(row.board ?? "").trim()) ? String(row.grainValue ?? "").trim() : "";
     const parentClashLeft = String(row.clashLeft || splitClashing(String(row.clashing ?? "")).left || "").trim();
     const parentClashRight = String(row.clashRight || splitClashing(String(row.clashing ?? "")).right || "").trim();
 
@@ -19683,6 +19891,7 @@ export default function ProjectDetailsPage() {
       drawerWeights: normalizeDrawerWeights(seed?.drawerWeights),
       // (A Custom piece's shape — kept as it is, or brought back from this device's copy of the Cutlist Entry.)
       shape: normalizeCutlistShape(seed?.shape),
+      edges: normalizeRowEdges(seed?.edges),
       quantity: String(seed?.quantity ?? ""),
       clashing: joinClashing(left, right),
       clashLeft: left,
@@ -21912,6 +22121,7 @@ export default function ProjectDetailsPage() {
             drawerDepths: normalizeDrawerDepths(item.DrawerDepths ?? item.drawerDepths),
             drawerWeights: normalizeDrawerWeights(item.DrawerWeights ?? item.drawerWeights),
             shape: normalizeCutlistShape(item.Shape ?? item.shape),
+            edges: normalizeRowEdges(item.Edges ?? item.edges),
               information: String(item.Information ?? item.information ?? item.info ?? ""),
               grain: grainParsed.grain,
               grainValue: grainParsed.grainValue,
@@ -25003,53 +25213,66 @@ export default function ProjectDetailsPage() {
     return map;
   };
 
-  const boardEdgingPairCountsFromRows = (rows: ProductionBoardRow[]) => {
-    const map = new Map<string, { colour: string; edging: string; count: number }>();
+  // How many boards have each colour with each edging, thickness or finish (`field`).
+  const boardPairCountsFromRows = (rows: ProductionBoardRow[], field: "edging" | "thickness" | "finish") => {
+    const map = new Map<string, { colour: string; value: string; count: number }>();
     for (const row of rows) {
       const colour = String(row.colour || "").trim();
-      const edging = String(row.edging || "").trim();
-      if (!colour || !edging) continue;
-      const key = `${colour.toLowerCase()}||${edging.toLowerCase()}`;
+      const value = String(row[field] || "").trim();
+      if (!colour || !value) continue;
+      const key = `${colour.toLowerCase()}||${value.toLowerCase()}`;
       const hit = map.get(key);
       if (hit) {
         hit.count += 1;
         hit.colour = colour;
-        hit.edging = edging;
+        hit.value = value;
       } else {
-        map.set(key, { colour, edging, count: 1 });
+        map.set(key, { colour, value, count: 1 });
       }
     }
     return map;
   };
 
-  // Shared by every board-colour-usage writer below: re-sorts each colour's nested edgings by
-  // count, drops zeroed-out or blank entries, then drops colour rows left with neither a direct
-  // count nor any edging pairing.
-  const finalizeBoardColourUsageRows = (usage: Map<string, BoardColourMemoryRow>): BoardColourMemoryRow[] =>
-    Array.from(usage.values())
-      .map((row) => ({
-        ...row,
-        edgings: (row.edgings ?? [])
-          .filter((edging) => edging.count > 0 && edging.value.trim())
-          .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value)),
-      }))
-      .filter((row) => (row.count > 0 || row.edgings.length > 0) && String(row.value || "").trim())
+  // Before the colour memory is saved: each colour's edgings, thicknesses and finishes sorted by count, without zeroed-out
+  // or blank ones, then colours left with no count and none of those dropped.
+  const finalizeBoardColourUsageRows = (usage: Map<string, BoardColourMemoryRow>): BoardColourMemoryRow[] => {
+    const tidy = (entries: BoardEdgingMemoryRow[] | undefined) =>
+      (entries ?? []).filter((entry) => entry.count > 0 && entry.value.trim()).sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+    return Array.from(usage.values())
+      .map((row) => ({ ...row, edgings: tidy(row.edgings), thicknesses: tidy(row.thicknesses), finishes: tidy(row.finishes) }))
+      .filter((row) => (row.count > 0 || row.edgings.length > 0 || row.thicknesses.length > 0 || row.finishes.length > 0) && String(row.value || "").trim())
       .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+  };
 
+  // The colour memory (Company Settings › Materials & Boards' Board colour memory) kept to the boards: the change from
+  // `prevRows` to `nextRows` — in how many boards have each colour, and each colour with each edging, thickness and
+  // finish — added to the company's counts (fetched fresh, so others' changes since aren't lost). Nothing written when
+  // nothing it counts changed.
   const syncBoardColourMemoryDelta = async (prevRows: ProductionBoardRow[], nextRows: ProductionBoardRow[]) => {
     if (!project?.companyId) return;
 
     const previousCounts = boardColourCountsFromRows(prevRows);
     const nextCounts = boardColourCountsFromRows(nextRows);
-    const previousEdgingCounts = boardEdgingPairCountsFromRows(prevRows);
-    const nextEdgingCounts = boardEdgingPairCountsFromRows(nextRows);
+    const pairCounts = BOARD_COLOUR_MEMORY_LISTS.map(({ list, field }) => ({
+      list,
+      previous: boardPairCountsFromRows(prevRows, field),
+      next: boardPairCountsFromRows(nextRows, field),
+    }));
+    const countsDiffer = <T extends { count: number }>(a: Map<string, T>, b: Map<string, T>) =>
+      a.size !== b.size || Array.from(a).some(([key, entry]) => b.get(key)?.count !== entry.count);
+    if (!countsDiffer(previousCounts, nextCounts) && !pairCounts.some((pair) => countsDiffer(pair.previous, pair.next))) return;
 
     const fresh = (await fetchCompanyDoc(project.companyId)) ?? companyDoc ?? {};
     const raw = (fresh.boardMaterialUsage ?? {}) as unknown;
     const normalized = normalizeBoardColourMemory(raw);
     const usage = new Map<string, BoardColourMemoryRow>();
     for (const row of normalized) {
-      usage.set(row.value.toLowerCase(), { ...row, edgings: (row.edgings ?? []).map((edging) => ({ ...edging })) });
+      usage.set(row.value.toLowerCase(), {
+        ...row,
+        edgings: (row.edgings ?? []).map((entry) => ({ ...entry })),
+        thicknesses: (row.thicknesses ?? []).map((entry) => ({ ...entry })),
+        finishes: (row.finishes ?? []).map((entry) => ({ ...entry })),
+      });
     }
 
     const keys = new Set<string>([...previousCounts.keys(), ...nextCounts.keys()]);
@@ -25083,134 +25306,27 @@ export default function ProjectDetailsPage() {
       }
     }
 
-    const edgingKeys = new Set<string>([...previousEdgingCounts.keys(), ...nextEdgingCounts.keys()]);
-    for (const key of edgingKeys) {
-      const prevCount = previousEdgingCounts.get(key)?.count ?? 0;
-      const nowCount = nextEdgingCounts.get(key)?.count ?? 0;
-      const delta = nowCount - prevCount;
-      if (!delta) continue;
-      const source = nextEdgingCounts.get(key) ?? previousEdgingCounts.get(key);
-      if (!source) continue;
-      const colourKey = source.colour.toLowerCase();
-      let colourRow = usage.get(colourKey);
-      if (!colourRow) {
-        colourRow = { value: source.colour, count: 0, edgings: [] };
-        usage.set(colourKey, colourRow);
-      }
-      const edgings = colourRow.edgings ?? (colourRow.edgings = []);
-      const edgingKey = source.edging.toLowerCase();
-      const existingEdging = edgings.find((edging) => edging.value.toLowerCase() === edgingKey);
-      if (existingEdging) {
-        existingEdging.count = Math.max(0, existingEdging.count + delta);
-        existingEdging.value = source.edging;
-      } else if (delta > 0) {
-        edgings.push({ value: source.edging, count: delta });
-      }
-    }
-
-    const colours = finalizeBoardColourUsageRows(usage);
-    const nextUsage = raw && typeof raw === "object" && !Array.isArray(raw)
-      ? { ...(raw as Record<string, unknown>), colours }
-      : { colours };
-
-    const ok = await saveCompanyDocPatch(project.companyId, { boardMaterialUsage: nextUsage });
-    if (ok) {
-      setCompanyDoc((prev) => ({ ...(prev ?? {}), boardMaterialUsage: nextUsage }));
-    }
-  };
-
-  const syncBoardColourMemorySingleChange = async (oldColourRaw: string, newColourRaw: string) => {
-    if (!project?.companyId) return;
-    const oldColour = String(oldColourRaw || "").trim();
-    const newColour = String(newColourRaw || "").trim();
-    if (!oldColour && !newColour) return;
-
-    const fresh = (await fetchCompanyDoc(project.companyId)) ?? companyDoc ?? {};
-    const raw = (fresh.boardMaterialUsage ?? {}) as unknown;
-    const normalized = normalizeBoardColourMemory(raw);
-    const usage = new Map<string, BoardColourMemoryRow>();
-    for (const row of normalized) {
-      usage.set(row.value.toLowerCase(), { ...row, edgings: (row.edgings ?? []).map((edging) => ({ ...edging })) });
-    }
-
-    if (oldColour && oldColour.toLowerCase() !== newColour.toLowerCase()) {
-      const oldKey = oldColour.toLowerCase();
-      const oldHit = usage.get(oldKey);
-      if (oldHit) {
-        oldHit.count = Math.max(0, oldHit.count - 1);
-      }
-    }
-
-    if (newColour) {
-      const newKey = newColour.toLowerCase();
-      const newHit = usage.get(newKey);
-      if (newHit) {
-        newHit.count += 1;
-        newHit.value = newColour;
-      } else {
-        usage.set(newKey, { value: newColour, count: 1, edgings: [] });
-      }
-    }
-
-    const colours = finalizeBoardColourUsageRows(usage);
-    const nextUsage = raw && typeof raw === "object" && !Array.isArray(raw)
-      ? { ...(raw as Record<string, unknown>), colours }
-      : { colours };
-
-    const ok = await saveCompanyDocPatch(project.companyId, { boardMaterialUsage: nextUsage });
-    if (ok) {
-      setCompanyDoc((prev) => ({ ...(prev ?? {}), boardMaterialUsage: nextUsage }));
-    }
-    // Company Wrapped — same -1/+1 the lifetime tally above just applied, mirrored into the
-    // per-year materials leaderboard.
-    if (oldColour && oldColour.toLowerCase() !== newColour.toLowerCase()) {
-      void bumpCompanyStatLeaderboard(project.companyId, "materialUsage", "materialUsageDisplay", oldColour, oldColour, -1);
-    }
-    if (newColour) {
-      void bumpCompanyStatLeaderboard(project.companyId, "materialUsage", "materialUsageDisplay", newColour, newColour, 1);
-    }
-  };
-
-  // Same idea as syncBoardColourMemorySingleChange, but for one board row's edging field — bumps
-  // the count nested under that row's OWN colour, since a tape's usage only matters paired with
-  // the colour it was cut for (see boardEdgingSuggestionsForColour/topEdgingForColour).
-  const syncBoardEdgingMemorySingleChange = async (colourRaw: string, oldEdgingRaw: string, newEdgingRaw: string) => {
-    if (!project?.companyId) return;
-    const colour = String(colourRaw || "").trim();
-    const oldEdging = String(oldEdgingRaw || "").trim();
-    const newEdging = String(newEdgingRaw || "").trim();
-    if (!colour || (!oldEdging && !newEdging)) return;
-
-    const fresh = (await fetchCompanyDoc(project.companyId)) ?? companyDoc ?? {};
-    const raw = (fresh.boardMaterialUsage ?? {}) as unknown;
-    const normalized = normalizeBoardColourMemory(raw);
-    const usage = new Map<string, BoardColourMemoryRow>();
-    for (const row of normalized) {
-      usage.set(row.value.toLowerCase(), { ...row, edgings: (row.edgings ?? []).map((edging) => ({ ...edging })) });
-    }
-
-    const colourKey = colour.toLowerCase();
-    let colourRow = usage.get(colourKey);
-    if (!colourRow) {
-      colourRow = { value: colour, count: 0, edgings: [] };
-      usage.set(colourKey, colourRow);
-    }
-    const edgings = colourRow.edgings ?? (colourRow.edgings = []);
-
-    if (oldEdging && oldEdging.toLowerCase() !== newEdging.toLowerCase()) {
-      const oldKey = oldEdging.toLowerCase();
-      const oldHit = edgings.find((edging) => edging.value.toLowerCase() === oldKey);
-      if (oldHit) oldHit.count = Math.max(0, oldHit.count - 1);
-    }
-
-    if (newEdging) {
-      const newKey = newEdging.toLowerCase();
-      const newHit = edgings.find((edging) => edging.value.toLowerCase() === newKey);
-      if (newHit) {
-        newHit.count += 1;
-        newHit.value = newEdging;
-      } else {
-        edgings.push({ value: newEdging, count: 1 });
+    for (const { list, previous, next } of pairCounts) {
+      for (const key of new Set<string>([...previous.keys(), ...next.keys()])) {
+        const delta = (next.get(key)?.count ?? 0) - (previous.get(key)?.count ?? 0);
+        if (!delta) continue;
+        const source = next.get(key) ?? previous.get(key);
+        if (!source) continue;
+        const colourKey = source.colour.toLowerCase();
+        let colourRow = usage.get(colourKey);
+        if (!colourRow) {
+          colourRow = { value: source.colour, count: 0, edgings: [], thicknesses: [], finishes: [] };
+          usage.set(colourKey, colourRow);
+        }
+        const entries = colourRow[list] ?? (colourRow[list] = []);
+        const valueKey = source.value.toLowerCase();
+        const existing = entries.find((entry) => entry.value.toLowerCase() === valueKey);
+        if (existing) {
+          existing.count = Math.max(0, existing.count + delta);
+          existing.value = source.value;
+        } else if (delta > 0) {
+          entries.push({ value: source.value, count: delta });
+        }
       }
     }
 
@@ -25408,6 +25524,12 @@ export default function ProjectDetailsPage() {
     previousEdgingRaw?: string,
   ) => {
     const prevRows = productionForm.boardTypes;
+    if (patch.edging !== undefined) {
+      const picked = String(patch.edging || "").trim().toLowerCase();
+      const before = String(previousEdgingRaw ?? prevRows.find((row) => row.id === id)?.edging ?? "").trim().toLowerCase();
+      const tape = picked && picked !== before ? edgeTapesSorted.find((t) => edgeTapeLabel(t).toLowerCase() === picked) : undefined;
+      if (tape) pickEdgeTape(tape.id);
+    }
     const next = {
       ...productionForm,
       boardTypes: productionForm.boardTypes.map((row) => (row.id === id ? { ...row, ...patch } : row)),
@@ -25419,20 +25541,19 @@ export default function ProjectDetailsPage() {
       const board = next.boardTypes.find((row) => row.id === id);
       if (board) applyBoardLacquerToCutlist(board, Boolean(patch.lacquer));
     }
-    if (ok && bumpColour) {
-      const oldColour = String(previousColourRaw ?? prevRows.find((row) => row.id === id)?.colour ?? "").trim();
-      const newColour = String(patch.colour ?? "").trim();
-      if (newColour.toLowerCase() !== oldColour.toLowerCase()) {
-        await syncBoardColourMemorySingleChange(oldColour, newColour);
-      }
-    }
-    if (ok && bumpEdging) {
-      const rowColour = String(next.boardTypes.find((row) => row.id === id)?.colour ?? "").trim();
-      const oldEdging = String(previousEdgingRaw ?? prevRows.find((row) => row.id === id)?.edging ?? "").trim();
-      const newEdging = String(patch.edging ?? "").trim();
-      if (rowColour && newEdging.toLowerCase() !== oldEdging.toLowerCase()) {
-        await syncBoardEdgingMemorySingleChange(rowColour, oldEdging, newEdging);
-      }
+    if (ok) {
+      // The colour memory: what changed in this board's colour, edging, thickness and finish (its colour and edging as
+      // they were before they were typed in — the boards here already have what was typed).
+      const before = prevRows.map((row) =>
+        row.id !== id
+          ? row
+          : {
+              ...row,
+              ...(bumpColour && previousColourRaw !== undefined ? { colour: previousColourRaw } : {}),
+              ...(bumpEdging && previousEdgingRaw !== undefined ? { edging: previousEdgingRaw } : {}),
+            },
+      );
+      await syncBoardColourMemoryDelta(before, next.boardTypes);
     }
   };
 
@@ -25520,11 +25641,10 @@ export default function ProjectDetailsPage() {
     setIsBoardChangePromptOpen(false);
   };
 
-  // Shared by every Colour-field commit site (mobile/desktop x blur/suggestion-click): also
-  // auto-fills Edging with that colour's own top tape when the row's edging is still at its
-  // untouched default, so picking a colour immediately suggests the tape it's normally cut with.
-  // Doesn't bump edging usage itself — only an explicit edging edit (typed or picked) counts as a
-  // real choice; auto-fill just saves the click when the top pick is what the user wants anyway.
+  // Shared by every Colour-field commit site (mobile/desktop x blur/suggestion-click): picking a colour fills in the
+  // thickness, finish and edging it's most used with (the colour memory's top of each), so its usual combination is
+  // there straight away — each only where the board's is still as a new board starts (its first thickness and finish,
+  // Matching), so one already chosen isn't changed. (Filled in, they're counted as the board's, as anything it has is.)
   const commitBoardColourChange = (rowId: string, newColourRaw: string, previousColourRaw: string) => {
     const newColour = String(newColourRaw || "");
     const previousColour = String(previousColourRaw || "").trim();
@@ -25537,6 +25657,17 @@ export default function ProjectDetailsPage() {
       if (isEdgingUntouched) {
         const topEdging = topEdgingForColour(trimmedNew);
         if (topEdging) patch.edging = topEdging;
+      }
+      const currentThickness = String(row?.thickness || "").trim();
+      if (!currentThickness || currentThickness === String(boardThicknessOptions[0] ?? "")) {
+        const topThickness = topBoardMemoryValueForColour(trimmedNew, "thicknesses");
+        if (topThickness && boardThicknessOptions.some((option) => String(option) === topThickness)) patch.thickness = topThickness;
+      }
+      const currentFinish = String(row?.finish || "").trim();
+      if (!currentFinish || currentFinish === String(boardFinishOptions[0] ?? "")) {
+        const topFinish = topBoardMemoryValueForColour(trimmedNew, "finishes");
+        const option = topFinish ? boardFinishOptions.find((entry) => entry.toLowerCase() === topFinish.toLowerCase()) : undefined;
+        if (option) patch.finish = option;
       }
     }
     void onBoardFieldCommit(rowId, patch, true, previousColour);
@@ -25671,7 +25802,8 @@ export default function ProjectDetailsPage() {
           if (width != null && width > maxEdge) errors.push({ field: "width", message: `${rowLabel}: Width exceeds board sheet size (${sheetText}).` });
           if (depth != null && depth > maxEdge) errors.push({ field: "depth", message: `${rowLabel}: Depth exceeds board sheet size (${sheetText}).` });
         }
-        const grainValue = String(row.grainValue || "").trim();
+        const grainValue =
+          opts?.boardSheetText || productionBoardAllowsGrainForValue(board) ? String(row.grainValue || "").trim() : "";
         const grainAxis = resolveGrainAxis(
           grainValue,
           String(row.height ?? ""),
@@ -29400,6 +29532,10 @@ export default function ProjectDetailsPage() {
         prev.map((row) => {
           if (row.id !== id) return row;
           const next = { ...row, ...patch };
+          // (Its Clashing whole kept with its two parts — set from its drawing or its dropdowns — so the drawing, and anything
+          // reading it whole, agree: all its edges unclashed is no clashing at all.)
+          if ("clashLeft" in patch || "clashRight" in patch) next.clashing = joinClashing(String(next.clashLeft ?? ""), String(next.clashRight ?? ""));
+          if ("height" in patch || "width" in patch) Object.assign(next, edgesPatchForSizeChange(row, next));
           if (isDoorPartType(next.partType)) {
             const nextMode = normalizeDoorModeValue(next.doorMode);
             const nextCount = normalizeDoorFrontCountValue(next.doorFrontCount);
@@ -29900,6 +30036,76 @@ export default function ProjectDetailsPage() {
     setCutlistRows(nextRows);
     await persistCutlistRows(nextRows);
   };
+  // A piece's edges changed on its drawing (components/piece-edges-zoom.tsx): which exactly, each one's tape, and its Clashing
+  // counted from them — saved straight away, as a hinge is. A List row of either cutlist.
+  // A piece's Height or Width just changed: if its edges were picked on its drawing before its size said which way round
+  // it is, they stay on the sides they were clicked on — long or short as the piece now is — and its Clashing follows
+  // (lib/edge-tapes.ts' edgesForSizeChange). Nothing when that doesn't apply.
+  const edgesPatchForSizeChange = (
+    previous: Pick<CutlistRow, "height" | "width" | "edges" | "clashLeft" | "clashRight" | "clashing">,
+    next: Pick<CutlistRow, "height" | "width">,
+  ): Partial<CutlistRow> => {
+    if (!normalizeRowEdges(previous.edges)) return {};
+    const edges = edgesForSizeChange(resolveRowEdges(previous), previous, next);
+    if (!edges) return {};
+    const { clashLeft, clashRight } = clashingFromEdges(edges);
+    return { edges, clashLeft, clashRight, clashing: joinClashing(clashLeft, clashRight) };
+  };
+  const commitPieceEdges = async (scope: "production" | "initial", rowId: string, edges: RowEdges) => {
+    const { clashLeft, clashRight } = clashingFromEdges(edges);
+    const patch = { edges, clashLeft, clashRight, clashing: joinClashing(clashLeft, clashRight) };
+    if (scope === "production") {
+      const nextRows = cutlistRows.map((r) => (r.id === rowId ? { ...r, ...patch } : r));
+      setCutlistRows(nextRows);
+      await persistCutlistRows(nextRows);
+      return;
+    }
+    const nextRows = initialCutlistRows.map((r) => (r.id === rowId ? { ...r, ...patch } : r));
+    setInitialCutlistRows(nextRows);
+    await persistInitialCutlistRows(nextRows);
+  };
+  // A piece's small drawing (its clashed edges' Xs) — hover for a bigger one, click to change its edges — or nothing, for
+  // a piece whose edges aren't its own to pick (canDrawPieceEdges). `onChange`: where a change goes (a List row, an Entry
+  // row, Edit piece); none — just to look at.
+  const renderPieceEdges = (row: CutlistRow, opts: { onChange?: (edges: RowEdges) => void; size?: number }) => {
+    if (!canDrawPieceEdges(row)) return null;
+    return (
+      <PieceEdgesZoom
+        height={String(row.height ?? "")}
+        width={String(row.width ?? "")}
+        edges={resolveRowEdges(row)}
+        tapes={pieceEdgeTapeOptions}
+        color={partTypeColors[String(row.partType || "Unassigned")]}
+        title={String(row.name || "").trim() || String(row.partType || "")}
+        editable={Boolean(opts.onChange)}
+        onChange={opts.onChange}
+        onPickTape={pickEdgeTape}
+        onAddTape={opts.onChange ? addEdgeTapeHere : undefined}
+        defaultThicknessMm={mostUsedEdgeTapeThicknessMm}
+        size={opts.size}
+      />
+    );
+  };
+  // ...a List row's Clashing cell: the drawing, then its Clashing.
+  const renderPieceEdgesCell = (row: CutlistRow, scope: "production" | "initial", text: ReactNode, readOnly: boolean) => {
+    const drawing = renderPieceEdges(row, { onChange: readOnly ? undefined : (edges) => void commitPieceEdges(scope, row.id, edges), size: 24 });
+    if (!drawing) return text;
+    return (
+      <span className="inline-flex max-w-full items-center gap-1.5 align-middle">
+        {drawing}
+        {text ? <span className="min-w-0 truncate">{text}</span> : null}
+      </span>
+    );
+  };
+  // ...an Entry row's: changed there, its draft.
+  const renderDraftPieceEdges = (draft: CutlistDraftRow, scope: "production" | "initial", size = 24) =>
+    renderPieceEdges(draft, {
+      size,
+      onChange:
+        scope === "production" ? (productionReadOnly ? undefined : (edges) => updateDraftCutlistRow(draft.id, { edges, ...clashingFromEdges(edges) }))
+        : salesReadOnly ? undefined
+        : (edges) => updateInitialDraftCutlistRow(draft.id, { edges, ...clashingFromEdges(edges) }),
+    });
   // Same direct-persist pattern as commitDoorHingeValue, for the door's hinge-side (LH/RH) picker
   // that sits alongside the hinge position textboxes — independent of the shared editingCell
   // machinery since it's a single standalone field, not a whole cell's worth.
@@ -30974,6 +31180,10 @@ export default function ProjectDetailsPage() {
       prev.map((row) => {
         if (row.id !== id) return row;
         const next = { ...row, ...patch };
+        // (Its Clashing whole kept with its two parts — set from its drawing or its dropdowns — so the drawing, and anything
+        // reading it whole, agree: all its edges unclashed is no clashing at all.)
+        if ("clashLeft" in patch || "clashRight" in patch) next.clashing = joinClashing(String(next.clashLeft ?? ""), String(next.clashRight ?? ""));
+        if ("height" in patch || "width" in patch) Object.assign(next, edgesPatchForSizeChange(row, next));
         if (isClassicDrawerRowLike(next)) {
           const tokens = parseDrawerHeightTokens(String(next.height ?? ""));
           next.height = formatDrawerHeightTokens(tokens);
@@ -31260,6 +31470,9 @@ export default function ProjectDetailsPage() {
     const shape = cutlistRowShape(draft);
     return (
       <span className="flex min-w-0 flex-1 items-center gap-2">
+        {scope === "production" ? (
+          <BoardSizeBubble size={boardSizeFor(String(draft.board || ""))} partColor={partTypeColors[String(draft.partType || "Unassigned")] ?? "#CBD5E1"} />
+        ) : null}
         <span className="min-w-0 flex-1 truncate">
           {[(scope === "production" ? boardDisplayLabel(String(draft.board || "")) : String(draft.board || "")) || "No board", cutlistMobileExtraFor(draft)]
             .filter(Boolean)
@@ -31291,6 +31504,7 @@ export default function ProjectDetailsPage() {
       name: String(row.name || ""),
       pill: shownAsCustom ? { label: String(row.partType || "Unassigned"), bg: ownColor, text: isLightHex(ownColor) ? "#1F2937" : "#F8FAFC" } : null,
       board: scope === "production" ? boardDisplayLabel(String(row.board || "")) : String(row.board || ""),
+      boardSize: scope === "production" ? boardSizeFor(String(row.board || "")) : "",
       extra: cutlistMobileExtraFor(row),
       height: String(row.height ?? ""),
       width: String(row.width ?? ""),
@@ -32050,8 +32264,15 @@ export default function ProjectDetailsPage() {
     // Keep heavy Production derivations tied to committed rows only.
     // Live cell edits still render through the active input itself, but we avoid
     // recalculating Nesting/CNC/Order summaries on every keystroke.
-    return cutlistRows;
-  }, [cutlistRows]);
+    // A piece on a board whose Grain is switched off: as a piece with no grain — its grain direction stays on the piece
+    // (cutlistRows), so switching the board's Grain back on brings every direction back.
+    return cutlistRows.map((row) =>
+      !String(row.grainValue ?? "").trim() || productionBoardAllowsGrainForValue(String(row.board ?? "").trim())
+        ? row
+        : { ...row, grainValue: "", grain: false },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cutlistRows, boardGrainByLabel, boardMetaByKey, cutlistBoardOptions]);
 
   // (A part type picked: its rows — and the Custom pieces in its table's Custom area, what they are being it.)
   const visibleCutlistRows = useMemo(() => {
@@ -32153,16 +32374,16 @@ export default function ProjectDetailsPage() {
     [cutlistEntry.partType],
   );
   const singleEntryHeightGrainMatch = useMemo(
-    () => matchesGrainDimension(String(cutlistEntry.grainValue ?? ""), cutlistEntry.height, "height"),
-    [cutlistEntry.grainValue, cutlistEntry.height],
+    () => selectedCutlistEntryBoardAllowsGrain && matchesGrainDimension(String(cutlistEntry.grainValue ?? ""), cutlistEntry.height, "height"),
+    [cutlistEntry.grainValue, cutlistEntry.height, selectedCutlistEntryBoardAllowsGrain],
   );
   const singleEntryWidthGrainMatch = useMemo(
-    () => matchesGrainDimension(String(cutlistEntry.grainValue ?? ""), cutlistEntry.width, "width"),
-    [cutlistEntry.grainValue, cutlistEntry.width],
+    () => selectedCutlistEntryBoardAllowsGrain && matchesGrainDimension(String(cutlistEntry.grainValue ?? ""), cutlistEntry.width, "width"),
+    [cutlistEntry.grainValue, cutlistEntry.width, selectedCutlistEntryBoardAllowsGrain],
   );
   const singleEntryDepthGrainMatch = useMemo(
-    () => matchesGrainDimension(String(cutlistEntry.grainValue ?? ""), cutlistEntry.depth, "depth"),
-    [cutlistEntry.grainValue, cutlistEntry.depth],
+    () => selectedCutlistEntryBoardAllowsGrain && matchesGrainDimension(String(cutlistEntry.grainValue ?? ""), cutlistEntry.depth, "depth"),
+    [cutlistEntry.grainValue, cutlistEntry.depth, selectedCutlistEntryBoardAllowsGrain],
   );
   const cutlistEntrySelectedDoorMode = useMemo(
     () => (isDoorPartType(cutlistEntry.partType) ? selectedDoorModeValue(cutlistEntry.doorMode) : ""),
@@ -33854,6 +34075,15 @@ export default function ProjectDetailsPage() {
       // cabinet's shaped piece: its own outline.)
       const labelShape = piece.shape !== undefined ? piece.shape : piece.key === "part" ? cutlistRowShape(row) : null;
       const clash = labelShape ? { edges: [], code: "" } : clashedEdgesFor(joinClashing(piece.clashLeft, piece.clashRight), tallMm, wideMm);
+      // (A plain part with its edges picked on its drawing: those exact edges, an edge on a different tape named.)
+      const pickedEdges = !labelShape && piece.key === "part" && row.edges ? resolveRowEdges(row) : null;
+      const edgesTall = tallMm > wideMm;
+      const clashedSides = pickedEdges ? pickedEdges.map((edge) => edgeSide(edge.key, edgesTall)) : clash.edges;
+      const edgeNotes = pickedEdges
+        ? Object.fromEntries(
+            pickedEdges.filter((edge) => edge.tapeId).map((edge) => [edgeSide(edge.key, edgesTall), edgeTapeNameById.get(edge.tapeId) ?? "Other tape"]),
+          )
+        : {};
       const sizes = ([["H", h], ["W", w], ["D", d]] as const)
         .filter(([, value]) => value)
         .map(([axis, value]) => ({ axis, value: lengthText(value) }));
@@ -33878,8 +34108,9 @@ export default function ProjectDetailsPage() {
             sizes,
             board,
             grain,
-            clashed: clash.edges,
+            clashed: clashedSides,
             clashCode: clash.code,
+            ...(Object.keys(edgeNotes).length ? { edgeNotes } : {}),
             ...(labelShape ? { shape: labelShape, shapeSides: shapeSideLengthsMm(labelShape).map((mm) => lengthText(formatShapeMm(mm))) } : {}),
             hinges: withHinges ? hingesFor(row, copy) : null,
             info,
@@ -34139,7 +34370,9 @@ export default function ProjectDetailsPage() {
       shape: CutlistShape;
       displayId: number;
       boardLabel: string;
+      // What the exports print (without the lines switched off), and every line (shown, those off greyed).
       infoLines: string[];
+      allInfoLines: string[];
       cabinet: { thicknessMm: number; pieces: CustomCabinetDerivedPiece[] } | null;
     }> = [];
     rows
@@ -34154,13 +34387,14 @@ export default function ProjectDetailsPage() {
           shape,
           displayId: cncNonCabDisplayIdCount + out.length + 1,
           boardLabel: boardDisplayLabel(row.board) || String(row.board || "-"),
-          infoLines: informationLinesFromValue(String(row.information || "")),
+          infoLines: cncExportInfoLines(row),
+          allInfoLines: informationLinesFromValue(String(row.information || "")),
           cabinet: customCabinet ? { thicknessMm: customCabinet.thicknessMm, pieces: customCabinet.pieces } : null,
         });
       });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cncRowsByBoard, isCabinetryPartType, partTypeCustomMap, cncNonCabDisplayIdCount, boardDisplayLabel, customCabinetOf]);
+  }, [cncRowsByBoard, isCabinetryPartType, partTypeCustomMap, cncNonCabDisplayIdCount, boardDisplayLabel, customCabinetOf, cncInfoOffByRow]);
   const cncCabinetCards = useMemo(() => {
     const q = String(cncSearch || "").trim().toLowerCase();
     const rows = cncSourceRows.filter((row) => {
@@ -34215,12 +34449,14 @@ export default function ProjectDetailsPage() {
         .join(" x "),
       fixedShelf: Math.max(0, Math.floor(toNum(row.fixedShelf))),
       adjustableShelf: Math.max(0, Math.floor(toNum(row.adjustableShelf))),
-      infoLines: informationLinesFromValue(String(row.information || "")),
+      infoLines: cncExportInfoLines(row),
+      allInfoLines: informationLinesFromValue(String(row.information || "")),
     }));
   }, [
     cncSearch,
     cncSourceRows,
     cncVisibilityMap,
+    cncInfoOffByRow,
     cncPartTypeFilter,
     isCabinetryPartType,
     boardDisplayLabel,
@@ -35062,7 +35298,7 @@ export default function ProjectDetailsPage() {
     const { jsPDF, autoTable } = pdfExportModules;
 
     const showCncGrainColumnForPrint =
-      showCutlistGrainColumn || cncPrintSourceRows.some((row) => String(row.grainValue ?? "").trim().length > 0);
+      showCutlistGrainColumn || cncPrintSourceRows.some((row) => String(row.grainValue ?? "").trim().length > 0 || Boolean(cncGrainLongOrShort(row)));
     const header = ["ID", "Room", "Part Type", "Part Name", "Height", "Width", "Depth", "Qty", "Clashing", ...(showCncGrainColumnForPrint ? ["Grain"] : []), "Information"];
     const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
     const pageWidth = doc.internal.pageSize.getWidth();
@@ -35087,8 +35323,8 @@ export default function ProjectDetailsPage() {
         String(row.depth ?? ""),
         String(row.quantity ?? ""),
         String(joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) ?? ""),
-        ...(showCncGrainColumnForPrint ? [String(row.grainValue ?? "")] : []),
-        [String(row.information ?? ""), cncBankCutNoteForRow(row as CncDisplayRow)]
+        ...(showCncGrainColumnForPrint ? [cncGrainLongOrShort(row)] : []),
+        [cncExportInformation(row as CncDisplayRow), cncBankCutNoteForRow(row as CncDisplayRow)]
           .filter((value) => String(value || "").trim().length > 0)
           .join("\n"),
       ]);
@@ -35221,6 +35457,7 @@ export default function ProjectDetailsPage() {
             quantity: String(qty),
             clashLeft: String(piece.clashLeft || ""),
             clashRight: String(piece.clashRight || ""),
+            edges: undefined,
           });
         }
         continue;
@@ -35238,6 +35475,7 @@ export default function ProjectDetailsPage() {
             quantity: String(qty),
             clashLeft: String(piece.clashLeft || ""),
             clashRight: String(piece.clashRight || ""),
+            edges: undefined,
           });
         }
         continue;
@@ -35255,6 +35493,7 @@ export default function ProjectDetailsPage() {
             quantity: String(qty),
             clashLeft: String(piece.clashLeft || ""),
             clashRight: String(piece.clashRight || ""),
+            edges: undefined,
             grainValue: String(piece.grainValue || row.grainValue || ""),
           });
         }
@@ -35285,6 +35524,9 @@ export default function ProjectDetailsPage() {
   const rawEdgeTapeByBoardKey = useMemo(() => {
     const mmByBoardKey: Record<string, number> = {};
     const tapeRunCountByBoardKey: Record<string, number> = {};
+    // (Edges on a tape other than their board's — picked on a piece's drawing: by tape.)
+    const mmByTapeId: Record<string, number> = {};
+    const tapeRunCountByTapeId: Record<string, number> = {};
     const parseDim = (value: unknown): number => {
       const match = String(value ?? "").replace(/,/g, ".").match(/-?\d+(?:\.\d+)?/);
       if (!match) return 0;
@@ -35324,70 +35566,130 @@ export default function ProjectDetailsPage() {
       const right = String(row.clashRight || split.right || "").trim().toUpperCase();
       const leftTape = tapeFromToken(left, longDim, shortDim, qty);
       const rightTape = tapeFromToken(right, longDim, shortDim, qty);
-      const rowMm = leftTape.mm + rightTape.mm;
+      let rowMm = leftTape.mm + rightTape.mm;
+      let rowRuns = leftTape.runs + rightTape.runs;
+      if (row.edges) {
+        for (const other of differentTapeRuns(row, longDim, shortDim, qty)) {
+          rowMm -= other.mm;
+          rowRuns -= other.runs;
+          mmByTapeId[other.tapeId] = (mmByTapeId[other.tapeId] ?? 0) + other.mm;
+          tapeRunCountByTapeId[other.tapeId] = (tapeRunCountByTapeId[other.tapeId] ?? 0) + other.runs;
+        }
+      }
       if (rowMm <= 0) continue;
       mmByBoardKey[boardKey] = (mmByBoardKey[boardKey] ?? 0) + rowMm;
-      tapeRunCountByBoardKey[boardKey] = (tapeRunCountByBoardKey[boardKey] ?? 0) + leftTape.runs + rightTape.runs;
+      tapeRunCountByBoardKey[boardKey] = (tapeRunCountByBoardKey[boardKey] ?? 0) + Math.max(0, rowRuns);
     }
-    return { mmByBoardKey, tapeRunCountByBoardKey };
+    return { mmByBoardKey, tapeRunCountByBoardKey, mmByTapeId, tapeRunCountByTapeId };
   }, [productionCutPieces, resolveBoardKey, partTypeCustomMap]);
+  // Company Settings › Production › Edge Tape: how what's ordered is worked out from the raw lengths (edgetapeOrderMetresText).
+  const edgetapeOrderSettings = useMemo<EdgetapeOrderSettings>(
+    () => ({
+      excessPerEndMm: edgebandingSettings.excessPerEndMm,
+      rules: edgebandingSettings.rules,
+      roundEnabled: edgebandingSettings.roundEnabled,
+      roundDirection: edgebandingSettings.roundDirection,
+      roundNearestMeters: edgebandingSettings.roundNearestMeters,
+    }),
+    [
+      edgebandingSettings.excessPerEndMm,
+      edgebandingSettings.rules,
+      edgebandingSettings.roundEnabled,
+      edgebandingSettings.roundDirection,
+      edgebandingSettings.roundNearestMeters,
+    ],
+  );
   const requiredEdgetapeByBoardRowId = useMemo(() => {
     const out: Record<string, string> = {};
-    const excessPerEndMm = Math.max(
-      0,
-      Number.parseFloat(String(edgebandingSettings.excessPerEndMm || "").replace(/,/g, ".")) || 0,
-    );
-    const rules = [...(edgebandingSettings.rules || [])]
-      .map((rule) => ({
-        upToMeters: Math.max(0, Number.parseFloat(String(rule.upToMeters || "").replace(/,/g, ".")) || 0),
-        addMeters: Math.max(0, Number.parseFloat(String(rule.addMeters || "").replace(/,/g, ".")) || 0),
-      }))
-      .filter((rule) => rule.upToMeters > 0 && rule.addMeters >= 0)
-      .sort((a, b) => a.upToMeters - b.upToMeters);
-    const roundEnabled = Boolean(edgebandingSettings.roundEnabled);
-    const roundDirection: "up" | "down" = edgebandingSettings.roundDirection === "down" ? "down" : "up";
-    const roundNearestMeters = Math.max(
-      0,
-      Number.parseFloat(String(edgebandingSettings.roundNearestMeters || "").replace(/,/g, ".")) || 0,
-    );
-    const formatMeters = (meters: number) => {
-      const rounded = Math.round(Math.max(0, meters) * 100) / 100;
-      return rounded % 1 === 0 ? String(Math.round(rounded)) : String(rounded.toFixed(2).replace(/\.?0+$/, ""));
-    };
     const { mmByBoardKey, tapeRunCountByBoardKey } = rawEdgeTapeByBoardKey;
-
     for (const boardRow of productionForm.boardTypes) {
       const boardKey = resolveBoardKey(boardKeyFromRow(boardRow));
-      if (!boardKey) {
-        out[boardRow.id] = "";
-        continue;
-      }
-      const rawMm = mmByBoardKey[boardKey] ?? 0;
-      const runs = tapeRunCountByBoardKey[boardKey] ?? 0;
-      const baseMeters = (rawMm + excessPerEndMm * 2 * runs) / 1000;
-      let extraMeters = 0;
-      if (baseMeters > 0) {
-        const matchRule = rules.find((rule) => baseMeters <= rule.upToMeters);
-        if (matchRule) extraMeters = matchRule.addMeters;
-      }
-      let finalMeters = baseMeters + extraMeters;
-      if (finalMeters > 0 && roundEnabled && roundNearestMeters > 0) {
-        const ratio = finalMeters / roundNearestMeters;
-        finalMeters = (roundDirection === "down" ? Math.floor(ratio) : Math.ceil(ratio)) * roundNearestMeters;
-      }
-      out[boardRow.id] = finalMeters > 0 ? formatMeters(finalMeters) : "";
+      out[boardRow.id] = boardKey ? edgetapeOrderMetresText(mmByBoardKey[boardKey] ?? 0, tapeRunCountByBoardKey[boardKey] ?? 0, edgetapeOrderSettings) : "";
     }
     return out;
-  }, [
-    productionForm.boardTypes,
-    edgebandingSettings.excessPerEndMm,
-    edgebandingSettings.rules,
-    edgebandingSettings.roundEnabled,
-    edgebandingSettings.roundDirection,
-    edgebandingSettings.roundNearestMeters,
-    rawEdgeTapeByBoardKey,
-    resolveBoardKey,
-  ]);
+  }, [productionForm.boardTypes, edgetapeOrderSettings, rawEdgeTapeByBoardKey, resolveBoardKey]);
+  // The edges on a tape other than their board's (picked on a piece's drawing), by tape — in the library's order (most
+  // picked first): the tape (its colour, thickness and width), how many metres the cutlist actually uses of it, and how
+  // many to order — with the excess at each end and the company's allowances (Company Settings › Production › Edge Tape,
+  // edgetapeOrderMetresText), as a board's own edgetape is. Board Settings lists both; the Order page what to order.
+  const edgeTapeOrderTotals = useMemo(() => {
+    const { mmByTapeId, tapeRunCountByTapeId } = rawEdgeTapeByBoardKey;
+    const order = new Map(edgeTapesSorted.map((tape, index) => [tape.id, index]));
+    const byId = new Map(edgeTapesSorted.map((tape) => [tape.id, tape]));
+    return Object.keys(mmByTapeId)
+      .filter((tapeId) => (mmByTapeId[tapeId] ?? 0) > 0)
+      .sort((a, b) => (order.get(a) ?? 9999) - (order.get(b) ?? 9999))
+      .map((tapeId) => {
+        const tape = byId.get(tapeId);
+        const mm = mmByTapeId[tapeId] ?? 0;
+        return {
+          tapeId,
+          label: edgeTapeLabelById.get(tapeId) ?? "A removed edge tape",
+          name: tape ? tape.name || "Edge tape" : "A removed edge tape",
+          thicknessMm: tape?.thicknessMm ?? 0,
+          widthMm: tape?.widthMm ?? 0,
+          actual: formatEdgeTapeMetres(mm / 1000),
+          total: edgetapeOrderMetresText(mm, tapeRunCountByTapeId[tapeId] ?? 0, edgetapeOrderSettings),
+        };
+      });
+  }, [rawEdgeTapeByBoardKey, edgetapeOrderSettings, edgeTapesSorted, edgeTapeLabelById]);
+  // Edge tape typed in by hand on the Edge Tape card (its +): a colour and the metres to order — projectSettings.manualEdgeTapes,
+  // saved straight into the project's settings as Board Settings' boards are. Ordered as typed (no allowances added).
+  const manualEdgeTapes = useMemo(
+    () => normalizeManualEdgeTapes(((project?.projectSettings ?? {}) as Record<string, unknown>).manualEdgeTapes),
+    [project?.projectSettings],
+  );
+  const saveManualEdgeTapes = async (next: ManualEdgeTape[]) => {
+    if (!project) return false;
+    const currentSettings = (project.projectSettings ?? {}) as Record<string, unknown>;
+    const nextSettings: Record<string, unknown> = { ...currentSettings, manualEdgeTapes: next };
+    const ok = await updateProjectPatch(project, { projectSettings: nextSettings, projectSettingsJson: JSON.stringify(nextSettings) });
+    if (ok) settleProjectSettings(currentSettings, nextSettings);
+    return ok;
+  };
+  // ...a row's colour or metres while it's being typed (saved as its box is left), and the row just added (its colour
+  // box gets the cursor).
+  const [manualEdgeTapeDrafts, setManualEdgeTapeDrafts] = useState<Record<string, { colour?: string; metres?: string }>>({});
+  const [justAddedManualEdgeTapeId, setJustAddedManualEdgeTapeId] = useState("");
+  // A row's Colour: the edge tape picker (EdgeTapeMenu — search, the + for a new tape, the library), opened under it.
+  const [manualEdgeTapeMenu, setManualEdgeTapeMenu] = useState<{ id: string; rect: DOMRect } | null>(null);
+  const manualEdgeTapeMenuTriggerRef = useRef<HTMLElement | null>(null);
+  const closeManualEdgeTapeMenu = useCallback(() => setManualEdgeTapeMenu(null), []);
+  const openManualEdgeTapeMenu = (id: string, el: HTMLElement) => {
+    manualEdgeTapeMenuTriggerRef.current = el;
+    setManualEdgeTapeMenu({ id, rect: el.getBoundingClientRect() });
+  };
+  // The library's tape a row's colour is (by its label, or its name), for its thickness and width.
+  const edgeTapeForManualColour = (colour: string) => {
+    const now = String(colour || "").trim().toLowerCase();
+    if (!now) return undefined;
+    return edgeTapesSorted.find((tape) => edgeTapeLabel(tape).toLowerCase() === now) ?? edgeTapesSorted.find((tape) => tape.name.trim().toLowerCase() === now);
+  };
+  const addManualEdgeTape = () => {
+    const id = `met_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+    setJustAddedManualEdgeTapeId(id);
+    void saveManualEdgeTapes([...manualEdgeTapes, { id, colour: "", metres: "" }]);
+  };
+  const commitManualEdgeTapeField = (id: string, field: "colour" | "metres") => {
+    const draft = manualEdgeTapeDrafts[id]?.[field];
+    setManualEdgeTapeDrafts((prev) => {
+      const entry = { ...(prev[id] ?? {}) };
+      delete entry[field];
+      const next = { ...prev };
+      if (Object.keys(entry).length) next[id] = entry;
+      else delete next[id];
+      return next;
+    });
+    if (draft === undefined) return;
+    const value = draft.trim();
+    const row = manualEdgeTapes.find((entry) => entry.id === id);
+    if (!row || row[field] === value) return;
+    void saveManualEdgeTapes(manualEdgeTapes.map((entry) => (entry.id === id ? { ...entry, [field]: value } : entry)));
+  };
+  const manualEdgeTapeMetres = (metres: string) => {
+    const n = Number.parseFloat(String(metres || "").replace(/,/g, "."));
+    return Number.isFinite(n) && n > 0 ? formatEdgeTapeMetres(n) : "";
+  };
   // Company Wrapped inputs — both requiredSheetCountByBoardRowId/requiredEdgetapeByBoardRowId are
   // outputs of the nesting/edgebanding simulation above (no stored per-row value to diff on save),
   // so instead of hooking a commit function, a useEffect below watches these totals for change.
@@ -35487,6 +35789,46 @@ export default function ProjectDetailsPage() {
 
   const onShowAllCncRows = () => {
     setCncVisibilityMap(Object.fromEntries(cncSourceRows.map((row) => [row.id, true])));
+    if (Object.keys(cncInfoOffByRow).length) void saveCncInfoOff({});
+  };
+  // One information line in the CNC Cutlist: a small switch on its left — showing when it's pointed at, or while it's off —
+  // that leaves it out of the exports, then its text (greyed and crossed off while it's off). Always showing on a phone.
+  const renderCncInfoLine = (row: { id?: string; sourceRowId?: string }, line: string, key: string, className = "") => {
+    const off = isCncInfoLineOff(row, line);
+    const canToggle = !productionReadOnly && Boolean(line.trim());
+    return (
+      <div key={key} className={`group/cncinfo flex min-w-0 items-start gap-1.5 ${className}`}>
+        {canToggle ? (
+          <button
+            type="button"
+            role="switch"
+            aria-checked={!off}
+            onClick={(event) => {
+              event.stopPropagation();
+              toggleCncInfoLine(row, line);
+            }}
+            onDoubleClick={(event) => event.stopPropagation()}
+            className={`relative mt-[1px] inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition ${
+              off || isCompactProjectViewport ? "opacity-100" : "opacity-0 focus-visible:opacity-100 group-hover/cncinfo:opacity-100"
+            }`}
+            style={{
+              borderColor: off ? "var(--glass-border)" : "var(--brand-strong)",
+              backgroundColor: off ? "var(--panel-muted)" : "var(--brand-strong)",
+            }}
+            title={off ? "Put back in the export" : "Leave out of the export"}
+            aria-label={off ? `Put “${line.trim()}” back in the export` : `Leave “${line.trim()}” out of the export`}
+          >
+            <span
+              className="cs-switch-knob inline-block h-3 w-3 rounded-full shadow transition-transform"
+              style={{ transform: off ? "translateX(1px)" : "translateX(12px)" }}
+            />
+          </button>
+        ) : null}
+        <span className="min-w-0 flex-1 break-words" style={off ? { opacity: 0.45, textDecoration: "line-through" } : undefined} title={off ? "Left out of the export" : undefined}>
+          {line}
+        </span>
+      </div>
+    );
   };
 
   const toggleCutlistGroup = (groupKey: string) => {
@@ -35667,9 +36009,10 @@ export default function ProjectDetailsPage() {
         } else if (col.key === "height" || col.key === "width" || col.key === "depth" || col.key === "quantity") {
           cols.push({ key: col.key, width: "70px" });
         } else if (col.key === "clashing") {
-          cols.push({ key: col.key, width: "84px" }, { key: col.key, width: "84px" });
+          // (The piece's drawing — its clashed edges — then the two dropdowns, the same width as each other.)
+          cols.push({ key: col.key, width: "30px" }, { key: col.key, width: "84px" }, { key: col.key, width: "84px" });
         } else if (col.key === "information") {
-          cols.push({ key: col.key, width: "minmax(216px,1fr)" });
+          cols.push({ key: col.key, width: "minmax(186px,1fr)" });
         } else if (col.key === "grain") {
           cols.push({ key: col.key, width: "96px" });
         }
@@ -35742,9 +36085,10 @@ export default function ProjectDetailsPage() {
       } else if (col.key === "height" || col.key === "width" || col.key === "depth" || col.key === "quantity") {
         cols.push("70px");
       } else if (col.key === "clashing") {
-        cols.push("84px", "84px");
+        // (The piece's drawing — its clashed edges — then the two dropdowns, the same width as each other.)
+        cols.push("30px", "84px", "84px");
       } else if (col.key === "information") {
-        cols.push("minmax(216px,1fr)");
+        cols.push("minmax(186px,1fr)");
       } else if (col.key === "grain") {
         cols.push(`${grainColumnWidth}px`);
       }
@@ -36183,6 +36527,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           updated[target.key] = value;
           break;
       }
+      if (target.key === "height" || target.key === "width") Object.assign(updated, edgesPatchForSizeChange(row, updated));
       if (target.key === "board" || target.key === "height" || target.key === "width" || target.key === "depth") {
         return autoSelectGrainValueForRow(updated);
       }
@@ -36573,9 +36918,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     setCutlistPieceEdit({ rowId: row.id, draft: { ...row }, issues: {}, saving: false });
   };
   const patchCutlistPieceEdit = (patch: Partial<CutlistRow> | ((draft: CutlistRow) => Partial<CutlistRow>)) =>
-    setCutlistPieceEdit((prev) =>
-      prev && !prev.saving ? { ...prev, draft: { ...prev.draft, ...(typeof patch === "function" ? patch(prev.draft) : patch) }, issues: {} } : prev,
-    );
+    setCutlistPieceEdit((prev) => {
+      if (!prev || prev.saving) return prev;
+      const change = typeof patch === "function" ? patch(prev.draft) : patch;
+      const draft = { ...prev.draft, ...change };
+      // (Its Clashing whole kept with its two parts, as an Entry row's is — updateDraftCutlistRow.)
+      if ("clashLeft" in change || "clashRight" in change) draft.clashing = joinClashing(String(draft.clashLeft ?? ""), String(draft.clashRight ?? ""));
+      if ("height" in change || "width" in change) Object.assign(draft, edgesPatchForSizeChange(prev.draft, draft));
+      return { ...prev, draft, issues: {} };
+    });
   // What changing one thing changes with it, as each field's own change in the list does (commitCellEdit): a new part type
   // its shelves or clashing let go, a new board its grain (none on it) and lacquer clashing, a drawer's heights its count,
   // a door's count its side, new sizes their grain.
@@ -36986,7 +37337,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             );
           }
           return (
-            <div className="grid grid-cols-2 gap-1">
+            <div className="flex items-center gap-1.5">
+              {renderPieceEdges(draft, {
+                size: 26,
+                onChange: readOnly ? undefined : (edges) => patchCutlistPieceEdit({ edges, ...clashingFromEdges(edges) }),
+              })}
+            <div className="grid min-w-0 flex-1 grid-cols-2 gap-1">
               <GlassSelectDropdown
                 fullWidth
                 value={clash.left}
@@ -37005,6 +37361,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 className={dropdownClass}
                 style={fieldColors("clashing")}
               />
+            </div>
             </div>
           );
         case "information":
@@ -37976,7 +38333,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     ) ?? "#2F6BFF";
   const cncHeaderTextColor = isLightHex(companyThemeColor) ? "#0F172A" : "#FFFFFF";
   const showCncGrainColumn =
-    showCutlistGrainColumn || filteredCncRows.some((row) => String(row.grainValue ?? "").trim().length > 0);
+    showCutlistGrainColumn || filteredCncRows.some((row) => String(row.grainValue ?? "").trim().length > 0 || Boolean(cncGrainLongOrShort(row)));
   const enabledQuoteContainers = useMemo(
     () =>
       quoteLayoutTemplate.containers.filter((container) => {
@@ -43154,6 +43511,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <p className="text-right text-[12px] font-semibold italic" style={{ color: projectPalette.text }}>{room.totalPrice}</p>
                   <div className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
                     <QuoteExtraToggleSwitch
+                      size="medium"
                       checked={Boolean(room.included)}
                       disabled={salesReadOnly || isSavingSalesRooms}
                       onChange={(checked) => void onToggleSalesRoomIncluded(room.name, checked)}
@@ -43230,16 +43588,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           <div className="p-3 text-[12px]">
             {salesProductRows.length > 0 ? (
               <>
-                <div className="mb-2 grid grid-cols-[40px_1fr_64px_64px] gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted }}>
+                <div className="mb-2 grid grid-cols-[48px_1fr_64px_64px] gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted }}>
                   <p></p><p>Product</p><p className="text-right">Edge Tape</p><p className="text-right">Lacquer</p>
                 </div>
-                <div className="space-y-1">
+                {/* (No gap between the rows: their lines part them, so each toggle has the same room above as below.) */}
+                <div>
                   {salesProductRows.map((row) => {
                     const edgeTapeMeters = initialMeasureEdgeTapeMetersByProductName[row.name.trim().toLowerCase()] || "";
                     const lacquerSqm = initialMeasureLacquerSqmByProductName[row.name.trim().toLowerCase()] || "";
                     return (
-                      <div key={row.name} className="grid grid-cols-[40px_1fr_64px_64px] items-center gap-2 border-b py-2 last:border-none" style={{ borderBottomColor: projectPalette.border }}>
+                      <div key={row.name} className="grid grid-cols-[48px_1fr_64px_64px] items-center gap-2 border-b py-1 last:border-none" style={{ borderBottomColor: projectPalette.border }}>
                         <QuoteExtraToggleSwitch
+                          size="medium"
                           checked={row.selected}
                           disabled={salesReadOnly || isSavingSalesRooms}
                           onChange={(checked) => void onToggleSalesProductSelected(row.name, checked)}
@@ -44388,6 +44748,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             value=""
             options={cutlistBoardOptions}
             getLabel={(value) => (value ? boardDisplayLabel(value) : "Board")}
+            getOptionPrefix={(value) => <BoardSizeBubble size={boardSizeFor(value)} />}
             onChange={(value) => void applyCutlistBulkEdit({ board: value })}
             disabled={!count}
             title="Change the board on the picked parts"
@@ -46276,8 +46637,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           String(row.depth ?? ""),
           String(row.quantity ?? ""),
           String(joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) ?? ""),
-          ...(showCncGrainColumn ? [String(row.grainValue ?? "")] : []),
-          [String(row.information ?? ""), cncBankCutNoteForRow(row as CncDisplayRow)]
+          ...(showCncGrainColumn ? [cncGrainLongOrShort(row)] : []),
+          [cncExportInformation(row as CncDisplayRow), cncBankCutNoteForRow(row as CncDisplayRow)]
             .filter((value) => String(value || "").trim().length > 0)
             .join("\n"),
         ];
@@ -46337,12 +46698,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         }
 
         const boardHasGrainForRow = boardGrainFor(String(row.board || "").trim());
-        const grainValue = String(row.grainValue ?? "");
-        const matchCols = [
-          matchesGrainDimension(grainValue, String(row.height ?? ""), "height"),
-          matchesGrainDimension(grainValue, String(row.width ?? ""), "width"),
-          matchesGrainDimension(grainValue, String(row.depth ?? ""), "depth"),
-        ];
+        const grainAxis = cncGrainAxisOf(row);
+        const matchCols = [grainAxis === "height", grainAxis === "width", grainAxis === "depth"];
         if (boardHasGrainForRow) {
           [5, 6, 7].forEach((col, idx) => {
             if (matchCols[idx]) {
@@ -46765,19 +47122,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       const hex = normalizeHexColor(partTypeColors[partType.trim()] ?? partTypeColors[key] ?? "");
       return hex ? { bg: hex, fg: isLightHex(hex) ? "#000000" : "#FFFFFF" } : null;
     };
-    // Grain as the old sheet had it: "Long" or "Short" — whether the grain runs along the part's longest
-    // dimension — and only for a board that has grain. Blank otherwise.
-    const grainLongOrShort = (row: CncDisplayRow): string => {
-      if (!boardGrainFor(String(row.board || "").trim())) return "";
-      const grain = String(row.grainValue ?? "").trim();
-      if (!grain) return "";
-      const dims = (["height", "width", "depth"] as const)
-        .map((key) => ({ key, value: Number.parseFloat(String(row[key] ?? "").match(/-?\d+(?:\.\d+)?/)?.[0] ?? "") }))
-        .filter((dim) => Number.isFinite(dim.value) && dim.value > 0);
-      const along = dims.find((dim) => matchesGrainDimension(grain, String(row[dim.key] ?? ""), dim.key));
-      if (!along) return "";
-      return along.value >= Math.max(...dims.map((dim) => dim.value)) ? "Long" : "Short";
-    };
+    // Grain as the old sheet had it: "Long" or "Short" (cncGrainLongOrShort — as the CNC Cutlist shows it).
+    const grainLongOrShort = (row: CncDisplayRow): string => cncGrainLongOrShort(row);
     // Numbers stay numbers (the sheet's dimensions/quantities were numeric cells).
     const numberOrText = (value: unknown) => {
       const text = String(value ?? "").trim();
@@ -46908,7 +47254,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         // (Its Information a line each — its shelves, its own lines, its bank's cut note — stacked in its cell.)
         const informationLines = [
           ...shelfNotesFor(row as CncDisplayRow),
-          ...informationLinesFromValue(String(row.information ?? "")),
+          ...cncExportInfoLines(row as CncDisplayRow),
           cncBankCutNoteForRow(row as CncDisplayRow),
         ].filter((value) => String(value || "").trim().length > 0);
         const information = informationLines.join("\n");
@@ -47308,7 +47654,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       quantity: allPdfRows.map((row) => String(row.quantity ?? "")),
       clashing: allPdfRows.map((row) => String(joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) ?? "")),
       grain: allPdfRows.map((row) => String(row.grainValue ?? "")),
-      information: allPdfRows.map((row) => String(row.information ?? "")),
+      information: allPdfRows.map((row) => cncExportInformation(row)),
     };
     const fitColPx = (values: string[], minPx: number, maxPx: number, padPx = 14) =>
       Math.max(
@@ -47446,12 +47792,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           isConfiguredDoorGroup &&
           rowBoardHasGrain &&
           isLastGroupedRowOfGroup;
-        const grainText = formatGrainColumnValue(
-          String(row.grainValue ?? ""),
-          String(row.height ?? ""),
-          String(row.width ?? ""),
-          String(row.depth ?? ""),
-        ) || (row.grain ? "Yes" : "");
+        const grainText = cncGrainLongOrShort(row);
         const tailCells: AutoTableCellInput[] = [
           String(row.name ?? ""),
           String(row.height ?? ""),
@@ -47460,7 +47801,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           String(row.quantity ?? ""),
           String(joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) ?? ""),
           ...(showCncGrainColumn ? [grainText] : []),
-          String(row.information ?? ""),
+          cncExportInformation(row),
         ];
           if (((!isDrawerOnGrainedBoard && isDrawer) || isConfiguredDoorGroup) && isGroupedContinuation) {
             // Important: with rowSpan in first row, continuation rows must not emit overlapped cells.
@@ -47571,6 +47912,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               bottom: 0.9,
               left: 0,
             };
+            // (Room, Part Name and Information's headings on the left, over their words; the rest centred.)
+            if (["Room", "Part Name", "Information"].includes(String(header[colIndex] ?? ""))) hookData.cell.styles.halign = "left";
             return;
           }
 
@@ -47621,14 +47964,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           if (colIndex === 4 || colIndex === 5 || colIndex === 6) {
             const row = group.rows[hookData.row.index];
             if (row) {
-              const boardHasGrain = boardGrainFor(String(row.board || "").trim());
-              const grainValue = String(row.grainValue ?? "");
+              const grainAxis = cncGrainAxisOf(row);
               const isMatch =
-                boardHasGrain && (
-                  (colIndex === 4 && matchesGrainDimension(grainValue, String(row.height ?? ""), "height")) ||
-                  (colIndex === 5 && matchesGrainDimension(grainValue, String(row.width ?? ""), "width")) ||
-                  (colIndex === 6 && matchesGrainDimension(grainValue, String(row.depth ?? ""), "depth"))
-                );
+                (colIndex === 4 && grainAxis === "height") || (colIndex === 5 && grainAxis === "width") || (colIndex === 6 && grainAxis === "depth");
               if (isMatch) {
                 hookData.cell.styles.fontStyle = "bold";
               }
@@ -47690,13 +48028,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           if (colIndex !== 4 && colIndex !== 5 && colIndex !== 6) return;
           const row = group.rows[hookData.row.index];
           if (!row) return;
-          const boardHasGrain = boardGrainFor(String(row.board || "").trim());
-          if (!boardHasGrain) return;
-          const grainValue = String(row.grainValue ?? "");
+          const grainAxis = cncGrainAxisOf(row);
+          if (!grainAxis) return;
           const isMatch =
-            (colIndex === 4 && matchesGrainDimension(grainValue, String(row.height ?? ""), "height")) ||
-            (colIndex === 5 && matchesGrainDimension(grainValue, String(row.width ?? ""), "width")) ||
-            (colIndex === 6 && matchesGrainDimension(grainValue, String(row.depth ?? ""), "depth"));
+            (colIndex === 4 && grainAxis === "height") || (colIndex === 5 && grainAxis === "width") || (colIndex === 6 && grainAxis === "depth");
           if (!isMatch) return;
           const rawVal = colIndex === 4 ? row.height : colIndex === 5 ? row.width : row.depth;
           const text = String(rawVal ?? "").trim();
@@ -48649,6 +48984,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         : gapOf(projectGapAllowancesDraft.tallTopOfDoorToTopNoScribers, companyGaps.tallTopOfDoorToTopNoScribers, 2),
       baseCabHeight: toNum(productionForm.cabinetry.baseCabHeight) || 720,
       tallCabHeight: toNum(productionForm.cabinetry.tallCabHeight) || 2100,
+      // Its cabinets' kicks (a dropped part's false cabinet's too): as high as Cabinetry's Foot Height (150 without one).
+      kickHeight: toNum(productionForm.cabinetry.footHeight) || undefined,
     };
     // What can be dropped in, as it goes in: a drawer bank (its fronts top to bottom, as the cutlist has them); a door
     // set up as fronts, or ×2 or more (side by side — a drawer's one above the other); a cabinet (Cabinetry, at its size —
@@ -49567,6 +49904,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </section>
               </div>
 
+              {/* Boards, with Edge tape beside it on the right (under it on a phone / tablet) — as Hardware and Misc above. */}
+              <div
+                className={orderColumns ? "grid items-start gap-5" : "space-y-5"}
+                style={orderColumns ? { gridTemplateColumns: "minmax(0,3fr) minmax(0,1fr)" } : undefined}
+              >
               <section className={orderCardClass} style={glassShineStyle("var(--brand)")}>
                 {orderSectionHeading({ title: "Boards", accent: "var(--brand)", detail: formatPartCount(cutlistRows.length) })}
                 {orderBoardSummary.length === 0 ? (
@@ -49624,6 +49966,53 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </div>
                 )}
               </section>
+              {/* Edge tape that isn't a board's own (Board Settings' Edge tape): what to order of each, with the excess. */}
+                <section className={orderCardClass} style={glassShineStyle("var(--brand)")}>
+                  {orderSectionHeading({ title: "Edge tape", accent: "var(--brand)" })}
+                  {edgeTapeOrderTotals.length === 0 && !manualEdgeTapes.some((entry) => entry.colour || manualEdgeTapeMetres(entry.metres))
+                    ? orderEmptyNote({
+                        icon: <ShoppingCart size={16} />,
+                        title: "No other edge tape",
+                        hint: "Edges set to a different tape in the cutlist, and any added on the Edge Tape card, show here. Each board's own is beside it.",
+                      })
+                    : null}
+                  <div>
+                    {edgeTapeOrderTotals.map((line) => (
+                      <div
+                        key={`order_edge_tape_${line.tapeId}`}
+                        className="flex min-h-11 items-center gap-3 border-t py-2 text-[13px] first:border-t-0"
+                        style={{ borderColor: orderRuleColor }}
+                      >
+                        <p className="min-w-0 flex-1 truncate font-medium" style={{ color: "var(--text-main)" }}>
+                          {line.label}
+                        </p>
+                        <p className="w-[72px] shrink-0 text-right font-semibold" style={{ color: "var(--text-main)" }}>
+                          {line.total ? `${line.total} m` : "-"}
+                        </p>
+                      </div>
+                    ))}
+                    {manualEdgeTapes
+                      .filter((entry) => entry.colour || manualEdgeTapeMetres(entry.metres))
+                      .map((entry) => {
+                        const metresText = manualEdgeTapeMetres(entry.metres);
+                        return (
+                          <div
+                            key={`order_manual_edge_tape_${entry.id}`}
+                            className="flex min-h-11 items-center gap-3 border-t py-2 text-[13px] first:border-t-0"
+                            style={{ borderColor: orderRuleColor }}
+                          >
+                            <p className="min-w-0 flex-1 truncate font-medium" style={{ color: "var(--text-main)" }}>
+                              {entry.colour || "Edge tape"}
+                            </p>
+                            <p className="w-[72px] shrink-0 text-right font-semibold" style={{ color: "var(--text-main)" }}>
+                              {metresText ? `${metresText} m` : "-"}
+                            </p>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </section>
+              </div>
             </div>
           </div>
           {cutlistFieldWarningBubblesPortal}
@@ -50616,7 +51005,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <p
                             key={`im_entry_full_header_${col.key}`}
                             className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
-                            style={col.key === "clashing" ? initialCutlistEntryCellStyle("clashing", 2) : initialCutlistEntryCellStyle(col.key)}
+                            style={col.key === "clashing" ? initialCutlistEntryCellStyle("clashing", 3) : initialCutlistEntryCellStyle(col.key)}
                           >
                             {col.key === "clashing" ? (initialDraftEntryShowsShelvesHeader ? "Shelves" : "Clashing") : col.label}
                           </p>
@@ -50807,7 +51196,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             {draftShape ? (
                               <>
                               {/* (A Custom piece: its Clashing just how much of it's banded; under the row, what it is, Edit and its drawing.) */}
-                              <div className="flex items-center" style={initialCutlistEntryCellStyle("clashing", 2)}>
+                              <div className="flex items-center" style={initialCutlistEntryCellStyle("clashing", 3)}>
                                 <span className="block w-full truncate text-center text-[12px]" style={{ color: draftTextColor }} title="Clashing — set on the shape">
                                   {cutlistRowBandedLengthText(draft, draftShape)}
                                 </span>
@@ -50826,7 +51215,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               })}
                               </>
                             ) : draftIsCabinetry ? (
-                              <div className="grid content-start gap-[1px]" style={initialCutlistEntryCellStyle("clashing", 2)}>
+                              <div className="grid content-start gap-[1px]" style={initialCutlistEntryCellStyle("clashing", 3)}>
                                 <div className="grid content-start gap-0">
                                   <div className="grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
                                     <span className="block pr-[3px] text-right text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>Fixed Shelf</span>
@@ -50900,7 +51289,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               </div>
                             ) : (
                               <>
-                                <div style={initialCutlistEntrySubCellStyle("clashing", 0)}>
+                                <div className="flex items-center justify-center" style={initialCutlistEntrySubCellStyle("clashing", 0)}>
+                                  {renderDraftPieceEdges(draft, "initial", 24)}
+                                </div>
+                                <div style={initialCutlistEntrySubCellStyle("clashing", 1)}>
                                   <BoardPillDropdown
                                     value={draft.clashLeft ?? ""}
                                     options={CLASH_LEFT_OPTIONS}
@@ -50914,7 +51306,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     onChange={(v) => updateInitialDraftCutlistRow(draft.id, { clashLeft: v })}
                                   />
                                 </div>
-                                <div style={initialCutlistEntrySubCellStyle("clashing", 1)}>
+                                <div style={initialCutlistEntrySubCellStyle("clashing", 2)}>
                                   <BoardPillDropdown
                                     value={draft.clashRight ?? ""}
                                     options={CLASH_RIGHT_OPTIONS}
@@ -51528,6 +51920,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               className={`cutlist-field h-6 w-full min-w-0 max-w-full rounded-[8px] border px-1 text-[11px] ${cutlistCellAlignClass(key) === "text-center" ? "text-center" : "text-left"}`}
                                               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                                             />
+                                          ) : key === "clashing" ? (
+                                            renderPieceEdgesCell(row, "initial", String(value ?? ""), salesReadOnly)
                                           ) : (
                                             String(value ?? "")
                                           )}
@@ -51896,7 +52290,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <input ref={registerCutlistWarnCellRef(draft.id, "quantity")} disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: wholeMathText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
                     </div>
                     <div className="space-y-1 col-span-2">
-                      <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Clashing</p>
+                      <div className="flex items-center justify-center gap-2">
+                        <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Clashing</p>
+                        {renderDraftPieceEdges(draft, "production", 26)}
+                      </div>
                       <div className="grid grid-cols-2 gap-2">
                         <BoardPillDropdown
                           value={draft.clashLeft ?? ""}
@@ -52913,6 +53310,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       value=""
                       options={cutlistBoardOptions}
                       getLabel={(value) => (value ? boardDisplayLabel(value) : "Board")}
+                      getOptionPrefix={(value) => <BoardSizeBubble size={boardSizeFor(value)} />}
                       onChange={(value) => void applyCutlistBulkEdit({ board: value })}
                       disabled={!pickedCount}
                       title="Change the board on the picked parts"
@@ -53467,7 +53865,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <p
                             key={`draft_header_${col.key}`}
                             className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
-                            style={col.key === "clashing" ? cutlistEntryCellStyle("clashing", 2) : cutlistEntryCellStyle(col.key)}
+                            style={col.key === "clashing" ? cutlistEntryCellStyle("clashing", 3) : cutlistEntryCellStyle(col.key)}
                           >
                               {col.label}
                           </p>
@@ -53552,7 +53950,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         const frontBankHasTopGapLabel = isFrontBankRow;
                         const frontBankHasBetweenGapLabel = isFrontBankRow;
                         const draftBoardAllowsGrain = productionBoardAllowsGrainForValue(String(draft.board ?? "").trim());
-                      const draftGrainValue = String(draft.grainValue ?? "").trim();
+                      const draftGrainValue = productionBoardAllowsGrainForValue(String(draft.board ?? "").trim()) ? String(draft.grainValue ?? "").trim() : "";
                       const draftHeightGrainMatch = matchesGrainDimension(draftGrainValue, draft.height, "height");
                       const draftWidthGrainMatch = matchesGrainDimension(draftGrainValue, draft.width, "width");
                       const draftDepthGrainMatch = matchesGrainDimension(draftGrainValue, draft.depth, "depth");
@@ -54352,7 +54750,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           {draftShape ? (
                             <>
                             {/* (A Custom piece: its Clashing just how much of it's banded; under the row, what it is, Edit and its drawing.) */}
-                            <div style={{ ...cutlistEntryCellStyle("clashing", 2), ...subCellCenterStyle }}>
+                            <div style={{ ...cutlistEntryCellStyle("clashing", 3), ...subCellCenterStyle }}>
                               <span className="block w-full truncate text-center text-[12px]" style={{ color: draftTextColor }} title="Clashing — set on the shape">
                                 {cutlistRowBandedLengthText(draft, draftShape)}
                               </span>
@@ -54372,7 +54770,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             })}
                             </>
                           ) : draftIsCabinetry ? (
-                            <div style={{ ...cutlistEntryCellStyle("clashing", 2), ...subCellCenterStyle }}>
+                            <div style={{ ...cutlistEntryCellStyle("clashing", 3), ...subCellCenterStyle }}>
                               <BoardPillDropdown
                                 value={draft.cabinetryClashBottom || ""}
                                 options={CLASH_BOTTOM_OPTIONS}
@@ -54390,7 +54788,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             </div>
                           ) : (
                             <>
-                              <div style={{ ...cutlistEntrySubCellStyle("clashing", 0), ...subCellCenterStyle }}>
+                              <div className="flex items-center justify-center" style={{ ...cutlistEntrySubCellStyle("clashing", 0), ...subCellCenterStyle }}>
+                                {renderDraftPieceEdges(draft, "production", isSubPartDraft ? 20 : 24)}
+                              </div>
+                              <div style={{ ...cutlistEntrySubCellStyle("clashing", 1), ...subCellCenterStyle }}>
                                 <BoardPillDropdown
                                   value={draft.clashLeft ?? ""}
                                   options={CLASH_LEFT_OPTIONS}
@@ -54404,7 +54805,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   onChange={(v) => updateDraftCutlistRow(draft.id, { clashLeft: v })}
                                 />
                               </div>
-                              <div style={{ ...cutlistEntrySubCellStyle("clashing", 1), ...subCellCenterStyle }}>
+                              <div style={{ ...cutlistEntrySubCellStyle("clashing", 2), ...subCellCenterStyle }}>
                                 <BoardPillDropdown
                                   value={draft.clashRight ?? ""}
                                   options={CLASH_RIGHT_OPTIONS}
@@ -55321,7 +55722,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               />
                                             </div>
                                           ) : (
-                                            row.clashing
+                                            renderPieceEdgesCell(row, "production", row.clashing, productionReadOnly)
                                           )}
                                         </td>
                                       );
@@ -56927,6 +57328,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     quantity: String(row.quantity || ""),
                                     clashing: joinClashing(row.clashLeft ?? "", row.clashRight ?? "") || row.clashing || "",
                                     informationLines: informationLinesFromValue(String(row.information || "")),
+                                    infoRow: { id: String(row.id), sourceRowId: row.sourceRowId },
                                   });
                                   setIsCncMobileRowDetailOpen(true);
                                   });
@@ -57090,12 +57492,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 (!nextRow ||
                                   !((isDrawerPartType(String(nextRow.partType || "")) && !boardGrainFor(String(nextRow.board || "").trim())) || isConfiguredDoorRowLike(nextRow)) ||
                                   String((nextRow as CncDisplayRow).sourceRowId || nextRow.id) !== groupedSourceKey);
-                              const isHeightGrainMatch =
-                                rowBoardHasGrain && matchesGrainDimension(String(row.grainValue ?? ""), String(row.height ?? ""), "height");
-                              const isWidthGrainMatch =
-                                rowBoardHasGrain && matchesGrainDimension(String(row.grainValue ?? ""), String(row.width ?? ""), "width");
-                              const isDepthGrainMatch =
-                                rowBoardHasGrain && matchesGrainDimension(String(row.grainValue ?? ""), String(row.depth ?? ""), "depth");
+                              const cncGrainAxis = cncGrainAxisOf(row);
+                              const isHeightGrainMatch = cncGrainAxis === "height";
+                              const isWidthGrainMatch = cncGrainAxis === "width";
+                              const isDepthGrainMatch = cncGrainAxis === "depth";
                               const partTypeRowSpan =
                                 isFirstGroupedRowOfGroup
                                   ? groupedRowSpan + (showGroupedBankNoteRow ? 1 : 0)
@@ -57179,21 +57579,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     <td className={`px-2 py-[5px] text-center${groupedPieceDividerClass}`} style={{ color: "var(--text-main)" }}>{joinClashing(row.clashLeft ?? "", row.clashRight ?? "") || row.clashing || ""}</td>
                                     {showCncGrainColumn && (
                                       <td className={`px-2 py-[5px] text-center${groupedPieceDividerClass}`} style={{ color: "var(--text-main)" }}>
-                                        {(() => {
-                                          const grainText = String(row.grainValue ?? "").trim();
-                                          if (!grainText) return row.grain ? "Yes" : "";
-                                          if (/^[HWD]\s*:/i.test(grainText)) return grainText.replace(/\s+/g, "");
-                                          if (isHeightGrainMatch) return `H:${grainText}`;
-                                          if (isWidthGrainMatch) return `W:${grainText}`;
-                                          if (isDepthGrainMatch) return `D:${grainText}`;
-                                          return grainText;
-                                        })()}
+                                        {cncGrainLongOrShort(row)}
                                       </td>
                                     )}
                                     <td className="px-2 py-[5px]" style={{ color: "var(--text-main)" }}>
-                                      {informationLinesFromValue(String(row.information || "")).map((line, infoIdx) => (
-                                        <div key={`cnc-info-${row.id}-${idx}-${infoIdx}`}>{line}</div>
-                                      ))}
+                                      {informationLinesFromValue(String(row.information || "")).map((line, infoIdx) =>
+                                        renderCncInfoLine(row, line, `cnc-info-${row.id}-${idx}-${infoIdx}`),
+                                      )}
                                     </td>
                                   </tr>
                                   {showGroupedBankNoteRow && isLastGroupedRowOfGroup && (
@@ -57262,7 +57654,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     >
                     <div className="overflow-hidden">
                     <div className="divide-y divide-[var(--glass-border)] bg-white">
-                    {cncCustomCards.map(({ row, shape, displayId, boardLabel, infoLines, cabinet }, idx) => {
+                    {cncCustomCards.map(({ row, shape, displayId, boardLabel, allInfoLines: infoLines, cabinet }, idx) => {
                       const partColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
                       const partText = isLightHex(partColor) ? "#0F172A" : "#F8FAFC";
                       const grainValue = String(row.grainValue ?? "");
@@ -57360,11 +57752,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     Information
                                   </div>
                                   <div className="space-y-1 px-3 py-2">
-                                    {infoLines.map((line, infoIdx) => (
-                                      <p key={`cc_info_m_${row.id}_${infoIdx}`} className="min-h-[16px] break-words">
-                                        {line}
-                                      </p>
-                                    ))}
+                                    {infoLines.map((line, infoIdx) =>
+                                      renderCncInfoLine(row, line, `cc_info_m_${row.id}_${infoIdx}`, "min-h-[16px]"),
+                                    )}
                                   </div>
                                 </div>
                               </div>
@@ -57388,11 +57778,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       <div className="grid min-w-0 flex-1 grid-cols-[120px_1fr] items-start">
                                         <p className="font-medium text-[#0F172A]">Information</p>
                                         <div className="space-y-1">
-                                          {infoLines.map((line, infoIdx) => (
-                                            <p key={`cc_info_${row.id}_${infoIdx}`} className="min-h-[16px]">
-                                              {line}
-                                            </p>
-                                          ))}
+                                          {infoLines.map((line, infoIdx) =>
+                                            renderCncInfoLine(row, line, `cc_info_${row.id}_${infoIdx}`, "min-h-[16px]"),
+                                          )}
                                         </div>
                                       </div>
                                     </div>
@@ -57452,11 +57840,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               <div className="grid grid-cols-[110px_1fr] items-start px-3 py-2">
                                 <p className="font-medium text-[#0F172A]">Information</p>
                                 <div className="space-y-1">
-                                  {infoLines.map((line, infoIdx) => (
-                                    <p key={`cnc_custom_info_${row.id}_${infoIdx}`} className="min-h-[16px] break-words">
-                                      {line}
-                                    </p>
-                                  ))}
+                                  {infoLines.map((line, infoIdx) =>
+                                    renderCncInfoLine(row, line, `cnc_custom_info_${row.id}_${infoIdx}`, "min-h-[16px]"),
+                                  )}
                                 </div>
                               </div>
                             </div>
@@ -57548,7 +57934,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     >
                     <div className="overflow-hidden">
                     <div className="divide-y divide-[var(--glass-border)] bg-white">
-                    {cncCabinetCards.map(({ row, displayId, boardLabel, sizeLabel, fixedShelf, adjustableShelf, infoLines, cabinetryPieces, widthMm, heightMm, depthMm, thicknessMm }, idx) => {
+                    {cncCabinetCards.map(({ row, displayId, boardLabel, sizeLabel, fixedShelf, adjustableShelf, allInfoLines: infoLines, cabinetryPieces, widthMm, heightMm, depthMm, thicknessMm }, idx) => {
                       const renderDimsWithGrain = (
                         height: string,
                         width: string,
@@ -57754,11 +58140,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     Information
                                   </div>
                                   <div className="space-y-1 px-3 py-2">
-                                    {infoLines.map((line, idx) => (
-                                      <p key={`cnc_cab_info_mobile_${row.id}_${idx}`} className="min-h-[16px] break-words">
-                                        {line}
-                                      </p>
-                                    ))}
+                                    {infoLines.map((line, idx) =>
+                                      renderCncInfoLine(row, line, `cnc_cab_info_mobile_${row.id}_${idx}`, "min-h-[16px]"),
+                                    )}
                                   </div>
                                 </div>
                               </div>
@@ -57854,11 +58238,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   <div className="grid grid-cols-[120px_1fr] items-start">
                                     <p className="font-medium text-[#0F172A]">Information</p>
                                     <div className="space-y-1">
-                                      {infoLines.map((line, idx) => (
-                                        <p key={`cnc_cab_info_inline_${row.id}_${idx}`} className="min-h-[16px]">
-                                          {line}
-                                        </p>
-                                      ))}
+                                      {infoLines.map((line, idx) =>
+                                        renderCncInfoLine(row, line, `cnc_cab_info_inline_${row.id}_${idx}`, "min-h-[16px]"),
+                                      )}
                                     </div>
                                   </div>
                                 </div>
@@ -58394,9 +58776,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         <p className={label} style={{ color: "var(--text-main)" }}>Information</p>
                       </div>
                       <div className="px-3 pt-1.5">
-                        {detail.informationLines.map((line, lineIdx) => (
-                          <p key={`cnc_detail_info_${lineIdx}`} className="whitespace-nowrap" style={{ color: "var(--text-main)" }}>{line}</p>
-                        ))}
+                        {detail.informationLines.map((line, lineIdx) =>
+                          detail.infoRow ? (
+                            <div key={`cnc_detail_info_${lineIdx}`} style={{ color: "var(--text-main)" }}>
+                              {renderCncInfoLine(detail.infoRow, line, `cnc_detail_info_line_${lineIdx}`, "py-0.5")}
+                            </div>
+                          ) : (
+                            <p key={`cnc_detail_info_${lineIdx}`} className="whitespace-nowrap" style={{ color: "var(--text-main)" }}>{line}</p>
+                          ),
+                        )}
                       </div>
                     </>
                   )}
@@ -62530,10 +62918,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
   // Board Settings (Production's overview, and a small job's Boards pop-up): its boards, Add board, and their pop-ups — a
   // phone's board row, and a board in use that can't be removed.
+  // (Always — it's where edge tape is typed in by hand too.)
+  const showEdgeTapeCard = true;
   const renderBoardSettings = () => (
     <>
+              {/* Board Settings, and Edge Tape beside it when there's room for both (the width they're given — a container
+                  query, so the small job's narrower Boards pop-up stacks too) — the two the same height there — or below it. */}
+              <div className="@container">
+                <div className={`grid gap-4 ${showEdgeTapeCard ? "@min-[1300px]:grid-cols-[minmax(0,1fr)_minmax(380px,32%)]" : ""}`}>
                 <section
-                  className="glass-shine glass-shine-neutral glass-shine-panel relative z-10 overflow-visible rounded-[18px] border"
+                  className="glass-shine glass-shine-neutral glass-shine-panel relative z-10 min-w-0 overflow-visible rounded-[18px] border"
                   style={tabContainerStyle}
                 >
                   <div className="flex h-[50px] items-center justify-between rounded-t-[18px] border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
@@ -62585,11 +62979,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   backgroundColor: projectPalette.panelMuted,
                                 }}
                               >
-                                <p className="min-w-0 truncate text-[12px] font-medium tracking-[0.7px]" style={{ color: "var(--text-main)" }}>
-                                  {row.colour
-                                    ? [row.colour, row.thickness ? activeLength(row.thickness) : "", row.finish].filter(Boolean).join(" ")
-                                    : `Board ${rowIndex + 1}`}
-                                </p>
+                                <span className="flex min-w-0 items-center gap-2">
+                                  <BoardSizeBubble size={shortSheetHeight(String(row.sheetSize || ""))} />
+                                  <span className="min-w-0 truncate text-[12px] font-medium tracking-[0.7px]" style={{ color: "var(--text-main)" }}>
+                                    {row.colour
+                                      ? [row.colour, row.thickness ? activeLength(row.thickness) : "", row.finish].filter(Boolean).join(" ")
+                                      : `Board ${rowIndex + 1}`}
+                                  </span>
+                                </span>
                                 <p className="text-right text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
                                   {requiredSheets}
                                 </p>
@@ -62722,7 +63119,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 disabled={productionReadOnly}
                                 value={row.thickness}
                                 options={["", ...boardThicknessOptions]}
-                                getLabel={(opt) => (opt ? activeLength(opt) : "")}
+                                getLabel={(opt) => (opt ? activeLength(opt, { withUnit: false }) : "")}
+                                fieldSuffix={activeUnitLabel()}
                                 onChange={(next) => void onBoardFieldCommit(row.id, { thickness: next })}
                                 className="h-7 rounded-[8px] border px-2 text-[12px]"
                                 style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
@@ -62737,90 +63135,25 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 className="h-7 rounded-[8px] border px-2 text-[12px]"
                                 style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                               />
-                              <div className="relative z-20">
-                                <input
-                                  // No browser autofill — its own suggestions list opens here (an autocomplete value
-                                  // the browser doesn't recognise; "off" isn't always kept to).
-                                  autoComplete="cs-board-field"
-                                  ref={(el) => { boardEdgingInputRefs.current[row.id] = el; }}
+                              <div className="relative z-20 min-w-0">
+                                <button
+                                  type="button"
                                   disabled={productionReadOnly}
-                                  value={row.edging}
-                                  onFocus={() => {
-                                    boardEdgingEditStartRef.current[row.id] = String(row.edging || "").trim();
-                                    setActiveBoardEdgingSuggestionsRowId(row.id);
-                                  }}
-                                  onChange={(e) => {
-                                    onBoardFieldDraftChange(row.id, { edging: e.target.value });
-                                    setActiveBoardEdgingSuggestionsRowId(row.id);
-                                  }}
-                                  onBlur={(e) => {
-                                    const previousEdging = String(
-                                      boardEdgingEditStartRef.current[row.id] ?? row.edging ?? "",
-                                    ).trim();
-                                    delete boardEdgingEditStartRef.current[row.id];
-                                    window.setTimeout(() => {
-                                      setActiveBoardEdgingSuggestionsRowId((prev) => (prev === row.id ? null : prev));
-                                    }, 120);
-                                    void onBoardFieldCommit(row.id, { edging: e.target.value }, false, undefined, true, previousEdging);
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Escape") {
-                                      setActiveBoardEdgingSuggestionsRowId(null);
-                                    }
-                                  }}
-                                  className="h-7 w-full rounded-[8px] border px-2 text-[12px]"
+                                  onClick={(e) => toggleEdgingMenu(row.id, e.currentTarget)}
+                                  aria-haspopup="menu"
+                                  aria-expanded={edgingMenu?.rowId === row.id}
+                                  aria-label="Edging"
+                                  title={row.edging || undefined}
+                                  className="flex h-7 w-full min-w-0 items-center gap-0.5 rounded-[8px] border px-1.5 text-left text-[12px] disabled:opacity-70"
                                   style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
-                                />
-                                {activeBoardEdgingSuggestionsRowId === row.id && boardEdgingDropdownRect &&
-                                  typeof document !== "undefined" &&
-                                  (() => {
-                                    const options = boardEdgingSuggestionsForColour(row.colour);
-                                    const query = String(row.edging || "").trim().toLowerCase();
-                                    const starts = options.filter((v) => v.toLowerCase().startsWith(query));
-                                    const contains = options.filter(
-                                      (v) => !v.toLowerCase().startsWith(query) && v.toLowerCase().includes(query),
-                                    );
-                                    const filtered = (query ? [...starts, ...contains] : options).slice(0, 20);
-                                    if (!filtered.length) return null;
-                                    return createPortal(
-                                      <div
-                                        data-board-suggestions-menu="true"
-                                        className="fixed max-h-[220px] w-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]"
-                                        style={{
-                                          left: boardEdgingDropdownRect.left,
-                                          top: boardEdgingDropdownRect.top,
-                                          zIndex: 2147483647,
-                                          borderColor: projectPalette.border,
-                                          backgroundColor: projectPalette.panelBg,
-                                        }}
-                                        onMouseDown={(ev) => ev.preventDefault()}
-                                      >
-                                        {filtered.map((edging) => (
-                                          <button
-                                            key={`${row.id}_${edging}`}
-                                            type="button"
-                                            onMouseDown={(ev) => ev.preventDefault()}
-                                            onClick={() => {
-                                              const previousEdging = String(
-                                                boardEdgingEditStartRef.current[row.id] ?? row.edging ?? "",
-                                              ).trim();
-                                              delete boardEdgingEditStartRef.current[row.id];
-                                              setActiveBoardEdgingSuggestionsRowId(null);
-                                              void onBoardFieldCommit(row.id, { edging }, false, undefined, true, previousEdging);
-                                            }}
-                                            className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:rounded-[8px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
-                                            style={{ color: "var(--text-main)" }}
-                                          >
-                                            {edging}
-                                          </button>
-                                        ))}
-                                      </div>,
-                                      document.body,
-                                    );
-                                  })()}
+                                >
+                                  <span className="min-w-0 flex-1 truncate">{boardEdgingShownName(row.edging)}</span>
+                                  <ChevronDown size={12} className={`shrink-0 transition-transform duration-150 motion-reduce:transition-none ${edgingMenu?.rowId === row.id ? "rotate-180" : ""}`} style={{ color: "var(--text-muted)" }} />
+                                </button>
                               </div>
                               <div className="flex justify-center">
                                 <QuoteExtraToggleSwitch
+                                  size="medium"
                                   disabled={productionReadOnly}
                                   checked={row.grain}
                                   onChange={(checked) => void onBoardFieldCommit(row.id, { grain: checked })}
@@ -62828,6 +63161,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               </div>
                               <div className="flex justify-center">
                                 <QuoteExtraToggleSwitch
+                                  size="medium"
                                   disabled={productionReadOnly}
                                   checked={row.lacquer}
                                   onChange={(checked) => void onBoardFieldCommit(row.id, { lacquer: checked })}
@@ -62839,6 +63173,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 disabled={productionReadOnly}
                                 value={row.sheetSize}
                                 options={["", ...sheetSizeOptions.map((opt) => `${opt.h} x ${opt.w}`)]}
+                                getOptionPrefix={(value) => <BoardSizeBubble size={shortSheetHeight(value)} />}
                                 onChange={(next) => void onBoardFieldCommit(row.id, { sheetSize: next })}
                                 className="h-7 rounded-[8px] border px-2 text-[12px]"
                                 style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
@@ -62870,6 +63205,222 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </button>
                   </div>
                 </section>
+                {/* Edge tape that isn't a board's own (edges set to it on pieces' drawings): each tape's colour, thickness and
+                    width, the metres the cutlist actually uses, and the metres with the excess (what to order). */}
+                {showEdgeTapeCard ? (
+                  <section
+                    className="glass-shine glass-shine-neutral glass-shine-panel @container relative min-w-0 overflow-visible rounded-[18px] border"
+                    style={tabContainerStyle}
+                  >
+                    <div className="flex h-[50px] items-center justify-between rounded-t-[18px] border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
+                      <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Edge Tape</p>
+                      <button
+                        type="button"
+                        disabled={productionReadOnly}
+                        onClick={addManualEdgeTape}
+                        // The same round green + as Board Settings' Add board.
+                        className="glass-shine inline-flex h-8 w-8 items-center justify-center rounded-full text-white hover:brightness-105 disabled:opacity-55"
+                        style={glassShineStyle("#16A34A")}
+                        title="Add edge tape"
+                        aria-label="Add edge tape"
+                      >
+                        <Plus size={24} strokeWidth={3} />
+                      </button>
+                    </div>
+                    <div className="p-3 text-[12px]">
+                      {edgeTapeOrderTotals.length === 0 && manualEdgeTapes.length === 0 ? null : (
+                        <>
+                          <div className={`${EDGE_TAPE_CARD_GRID} items-center gap-1.5 px-2.5 text-[11px] font-bold`} style={{ color: projectPalette.textMuted }}>
+                            <p />
+                            <p>Colour</p>
+                            <p className="hidden text-center @min-[400px]:block">Thickness</p>
+                            <p className="hidden text-center @min-[400px]:block">Width</p>
+                            <p className="text-center" title="What the cutlist actually uses">Metres</p>
+                            <p className="text-right" title="With the excess at each end and the allowances in Company Settings › Production › Edge Tape — what to order">
+                              Total
+                            </p>
+                          </div>
+                          <div className="mt-2 space-y-2">
+                            {edgeTapeOrderTotals.map((line) => (
+                              <div
+                                key={line.tapeId}
+                                className={`${EDGE_TAPE_CARD_GRID} min-h-8 items-center gap-1.5 rounded-[10px] border px-2.5 py-1.5 text-[12px] font-medium`}
+                                style={{ color: "var(--text-main)", borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}
+                              >
+                                <span />
+                                <span className="min-w-0" title={line.label}>
+                                  <span className="block truncate">{line.name}</span>
+                                  {line.thicknessMm > 0 || line.widthMm > 0 ? (
+                                    <span className="block truncate text-[11px] @min-[400px]:hidden" style={{ color: projectPalette.textMuted }}>
+                                      {[line.thicknessMm, line.widthMm].filter((mm) => mm > 0).map((mm) => activeLength(mm)).join(" × ")}
+                                    </span>
+                                  ) : null}
+                                </span>
+                                <span className="hidden text-center @min-[400px]:block">{line.thicknessMm > 0 ? activeLength(line.thicknessMm) : "-"}</span>
+                                <span className="hidden text-center @min-[400px]:block">{line.widthMm > 0 ? activeLength(line.widthMm) : "-"}</span>
+                                <span className="text-center">{line.actual ? `${line.actual} m` : "-"}</span>
+                                <span className="text-right font-semibold">{line.total ? `${line.total} m` : "-"}</span>
+                              </div>
+                            ))}
+                            {/* Typed in by hand: its colour, and the metres to order (as typed — nothing added). */}
+                            {manualEdgeTapes.map((entry) => {
+                              const metresText = manualEdgeTapeMetres(manualEdgeTapeDrafts[entry.id]?.metres ?? entry.metres);
+                              return (
+                                <div
+                                  key={entry.id}
+                                  className={`${EDGE_TAPE_CARD_GRID} min-h-8 items-center gap-1.5 rounded-[10px] border px-2.5 py-1.5 text-[12px] font-medium`}
+                                  style={{ color: "var(--text-main)", borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}
+                                >
+                                  <button
+                                    type="button"
+                                    disabled={productionReadOnly}
+                                    onClick={() => void saveManualEdgeTapes(manualEdgeTapes.filter((row) => row.id !== entry.id))}
+                                    // Board Settings' remove button: round, the glass shine in red.
+                                    className="glass-shine inline-flex h-7 w-7 items-center justify-center rounded-full text-white hover:brightness-105 disabled:opacity-55"
+                                    style={glassShineStyle("#EF4444")}
+                                    aria-label="Remove edge tape"
+                                    title="Remove"
+                                  >
+                                    <X size={17} className="mx-auto" strokeWidth={2.75} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={productionReadOnly}
+                                    ref={(el) => {
+                                      // (Just added with a +: its picker open straight away.)
+                                      if (el && entry.id === justAddedManualEdgeTapeId) {
+                                        setJustAddedManualEdgeTapeId("");
+                                        window.requestAnimationFrame(() => openManualEdgeTapeMenu(entry.id, el));
+                                      }
+                                    }}
+                                    onClick={(e) => {
+                                      if (manualEdgeTapeMenu?.id === entry.id) setManualEdgeTapeMenu(null);
+                                      else openManualEdgeTapeMenu(entry.id, e.currentTarget);
+                                    }}
+                                    aria-haspopup="menu"
+                                    aria-expanded={manualEdgeTapeMenu?.id === entry.id}
+                                    aria-label="Edge tape colour"
+                                    title={entry.colour || undefined}
+                                    className="flex h-7 w-full min-w-0 items-center gap-0.5 rounded-[8px] border px-2 text-left text-[12px] font-medium disabled:opacity-60"
+                                    style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
+                                  >
+                                    <span className="min-w-0 flex-1 truncate" style={entry.colour ? undefined : { color: projectPalette.textMuted }}>
+                                      {entry.colour ? boardEdgingShownName(entry.colour) : "Colour"}
+                                    </span>
+                                    <ChevronDown
+                                      size={12}
+                                      className={`shrink-0 transition-transform duration-150 motion-reduce:transition-none ${manualEdgeTapeMenu?.id === entry.id ? "rotate-180" : ""}`}
+                                      style={{ color: "var(--text-muted)" }}
+                                    />
+                                  </button>
+                                  {(() => {
+                                    const tape = edgeTapeForManualColour(entry.colour);
+                                    return (
+                                      <>
+                                        <span className="hidden text-center @min-[400px]:block">{tape && tape.thicknessMm > 0 ? activeLength(tape.thicknessMm) : "-"}</span>
+                                        <span className="hidden text-center @min-[400px]:block">{tape && tape.widthMm > 0 ? activeLength(tape.widthMm) : "-"}</span>
+                                      </>
+                                    );
+                                  })()}
+                                  <input
+                                    inputMode="decimal"
+                                    autoComplete="cs-edge-tape-metres"
+                                    disabled={productionReadOnly}
+                                    value={manualEdgeTapeDrafts[entry.id]?.metres ?? entry.metres}
+                                    onChange={(e) => {
+                                      const value = e.target.value.replace(/[^0-9.,]/g, "");
+                                      setManualEdgeTapeDrafts((prev) => ({ ...prev, [entry.id]: { ...(prev[entry.id] ?? {}), metres: value } }));
+                                    }}
+                                    onBlur={() => commitManualEdgeTapeField(entry.id, "metres")}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                                    }}
+                                    placeholder="m"
+                                    aria-label="Edge tape metres"
+                                    className="h-7 w-full min-w-0 rounded-[8px] border px-1 text-center text-[12px] font-medium disabled:opacity-60"
+                                    style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
+                                  />
+                                  <span className="text-right font-semibold" title="Ordered as typed">{metresText ? `${metresText} m` : "-"}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        disabled={productionReadOnly}
+                        onClick={addManualEdgeTape}
+                        // As Board Settings' + under its boards.
+                        className="glass-shine mt-3 inline-flex h-8 w-8 items-center justify-center rounded-full text-white hover:brightness-105 disabled:opacity-55"
+                        style={glassShineStyle("#16A34A")}
+                        title="Add edge tape"
+                        aria-label="Add edge tape"
+                      >
+                        <Plus size={24} strokeWidth={3} />
+                      </button>
+                    </div>
+                  </section>
+                ) : null}
+                </div>
+              </div>
+                {manualEdgeTapeMenu
+                  ? (() => {
+                      const entry = manualEdgeTapes.find((row) => row.id === manualEdgeTapeMenu.id);
+                      if (!entry) return null;
+                      const options = edgeTapesSorted.map((tape) => ({ id: edgeTapeLabel(tape), label: edgeTapeLabel(tape) }));
+                      const now = String(entry.colour || "").trim();
+                      if (now && !options.some((option) => option.id.toLowerCase() === now.toLowerCase())) options.unshift({ id: now, label: now });
+                      const pick = (value: string) => {
+                        setManualEdgeTapeMenu(null);
+                        if (value === entry.colour) return;
+                        void saveManualEdgeTapes(manualEdgeTapes.map((row) => (row.id === entry.id ? { ...row, colour: value } : row)));
+                      };
+                      return (
+                        <EdgeTapeMenu
+                          key={manualEdgeTapeMenu.id}
+                          at={{ rect: manualEdgeTapeMenu.rect }}
+                          label="Edge tape colour"
+                          options={options}
+                          selectedId={options.find((option) => option.id.toLowerCase() === now.toLowerCase())?.id ?? null}
+                          onPick={(value) => {
+                            const tape = edgeTapesSorted.find((entryTape) => edgeTapeLabel(entryTape) === value);
+                            if (tape) pickEdgeTape(tape.id);
+                            pick(value);
+                          }}
+                          onClose={closeManualEdgeTapeMenu}
+                          onAddTape={productionReadOnly ? undefined : addTapeForEdging}
+                          defaultThicknessMm={mostUsedEdgeTapeThicknessMm}
+                          triggerRef={manualEdgeTapeMenuTriggerRef}
+                        />
+                      );
+                    })()
+                  : null}
+                {edgingMenu
+                  ? (() => {
+                      const row = productionForm.boardTypes.find((entry) => entry.id === edgingMenu.rowId);
+                      if (!row) return null;
+                      const options = boardEdgingMenuOptions(row.edging, row.thickness);
+                      const now = String(row.edging || "").trim().toLowerCase();
+                      return (
+                        <EdgeTapeMenu
+                          key={edgingMenu.rowId}
+                          at={{ rect: edgingMenu.rect }}
+                          label="Edging"
+                          options={options}
+                          selectedId={options.find((option) => option.id.toLowerCase() === now)?.id ?? null}
+                          onPick={(value) => {
+                            setEdgingMenu(null);
+                            void onBoardFieldCommit(row.id, { edging: value }, false, undefined, true, String(row.edging || "").trim());
+                          }}
+                          onClose={closeEdgingMenu}
+                          onAddTape={productionReadOnly ? undefined : addTapeForEdging}
+                          defaultThicknessMm={mostUsedEdgeTapeThicknessMm}
+                          triggerRef={edgingMenuTriggerRef}
+                        />
+                      );
+                    })()
+                  : null}
                 {shouldRenderBoardRowDeleteBlockedModal && displayBoardRowDeleteBlocked && typeof document !== "undefined" && createPortal(
                   <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
                     <button
@@ -62926,7 +63477,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       >
                         <div className="flex min-h-0 flex-1 flex-col">
                           <div className="glass-modal-header relative flex h-[56px] shrink-0 items-center justify-between gap-3 px-5">
-                            <p className="min-w-0 truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Board {rowIndex + 1}</p>
+                            <span className="flex min-w-0 items-center gap-2">
+                              <BoardSizeBubble size={shortSheetHeight(String(row.sheetSize || ""))} />
+                              <p className="min-w-0 truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Board {rowIndex + 1}</p>
+                            </span>
                             <div className="flex items-center gap-2">
                               <button
                                 type="button"
@@ -63043,7 +63597,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 disabled={productionReadOnly}
                                 value={row.thickness}
                                 options={["", ...boardThicknessOptions]}
-                                getLabel={(opt) => (opt ? activeLength(opt) : "")}
+                                getLabel={(opt) => (opt ? activeLength(opt, { withUnit: false }) : "")}
+                                fieldSuffix={activeUnitLabel()}
                                 onChange={(next) => void onBoardFieldCommit(row.id, { thickness: next })}
                                 className="h-9 rounded-[8px] border px-3 text-[13px]"
                                 style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
@@ -63064,87 +63619,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               <p className={detailLabel} style={{ color: "var(--text-main)" }}>Edging</p>
                             </div>
                             <div className="relative z-20 px-3 pt-1.5">
-                              <input
-                                // No browser autofill — its own suggestions list opens here (an autocomplete value
-                                // the browser doesn't recognise; "off" isn't always kept to).
-                                autoComplete="cs-board-field"
-                                ref={(el) => { boardEdgingInputRefs.current[row.id] = el; }}
+                              <button
+                                type="button"
                                 disabled={productionReadOnly}
-                                value={row.edging}
-                                onFocus={() => {
-                                  boardEdgingEditStartRef.current[row.id] = String(row.edging || "").trim();
-                                  setActiveBoardEdgingSuggestionsRowId(row.id);
-                                }}
-                                onChange={(e) => {
-                                  onBoardFieldDraftChange(row.id, { edging: e.target.value });
-                                  setActiveBoardEdgingSuggestionsRowId(row.id);
-                                }}
-                                onBlur={(e) => {
-                                  const previousEdging = String(
-                                    boardEdgingEditStartRef.current[row.id] ?? row.edging ?? "",
-                                  ).trim();
-                                  delete boardEdgingEditStartRef.current[row.id];
-                                  window.setTimeout(() => {
-                                    setActiveBoardEdgingSuggestionsRowId((prev) => (prev === row.id ? null : prev));
-                                  }, 120);
-                                  void onBoardFieldCommit(row.id, { edging: e.target.value }, false, undefined, true, previousEdging);
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Escape") {
-                                    setActiveBoardEdgingSuggestionsRowId(null);
-                                  }
-                                }}
-                                className="h-9 w-full rounded-[8px] border px-3 text-[13px]"
+                                onClick={(e) => toggleEdgingMenu(row.id, e.currentTarget)}
+                                aria-haspopup="menu"
+                                aria-expanded={edgingMenu?.rowId === row.id}
+                                aria-label="Edging"
+                                className="flex h-9 w-full min-w-0 items-center gap-1 rounded-[8px] border px-3 text-left text-[13px] disabled:opacity-70"
                                 style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                              />
-                              {activeBoardEdgingSuggestionsRowId === row.id && boardEdgingDropdownRect &&
-                                typeof document !== "undefined" &&
-                                (() => {
-                                  const options = boardEdgingSuggestionsForColour(row.colour);
-                                  const query = String(row.edging || "").trim().toLowerCase();
-                                  const starts = options.filter((v) => v.toLowerCase().startsWith(query));
-                                  const contains = options.filter(
-                                    (v) => !v.toLowerCase().startsWith(query) && v.toLowerCase().includes(query),
-                                  );
-                                  const filtered = (query ? [...starts, ...contains] : options).slice(0, 20);
-                                  if (!filtered.length) return null;
-                                  return createPortal(
-                                    <div
-                                      data-board-suggestions-menu="true"
-                                      className="fixed max-h-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)] max-md:max-h-[320px] max-md:rounded-[12px] max-md:p-1.5"
-                                      style={{
-                                        left: boardEdgingDropdownRect.left,
-                                        top: boardEdgingDropdownRect.top,
-                                        width: boardEdgingDropdownRect.width,
-                                        zIndex: 2147483647,
-                                        borderColor: "var(--glass-border)",
-                                        backgroundColor: "var(--panel-bg)",
-                                      }}
-                                      onMouseDown={(ev) => ev.preventDefault()}
-                                    >
-                                      {filtered.map((edging) => (
-                                        <button
-                                          key={`${row.id}_${edging}`}
-                                          type="button"
-                                          onMouseDown={(ev) => ev.preventDefault()}
-                                          onClick={() => {
-                                            const previousEdging = String(
-                                              boardEdgingEditStartRef.current[row.id] ?? row.edging ?? "",
-                                            ).trim();
-                                            delete boardEdgingEditStartRef.current[row.id];
-                                            setActiveBoardEdgingSuggestionsRowId(null);
-                                            void onBoardFieldCommit(row.id, { edging }, false, undefined, true, previousEdging);
-                                          }}
-                                          className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:rounded-[8px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
-                                          style={{ color: "var(--text-main)" }}
-                                        >
-                                          {edging}
-                                        </button>
-                                      ))}
-                                    </div>,
-                                    document.body,
-                                  );
-                                })()}
+                              >
+                                <span className="min-w-0 flex-1 truncate">{boardEdgingShownName(row.edging)}</span>
+                                <ChevronDown size={14} className={`shrink-0 transition-transform duration-150 motion-reduce:transition-none ${edgingMenu?.rowId === row.id ? "rotate-180" : ""}`} style={{ color: "var(--text-muted)" }} />
+                              </button>
                             </div>
 
                             <div className="mt-4 grid grid-cols-3 gap-4 rounded-[8px] px-3 py-1.5 text-center" style={{ backgroundColor: detailBarBg }}>
@@ -63175,6 +63662,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 disabled={productionReadOnly}
                                 value={row.sheetSize}
                                 options={["", ...sheetSizeOptions.map((opt) => `${opt.h} x ${opt.w}`)]}
+                                getOptionPrefix={(value) => <BoardSizeBubble size={shortSheetHeight(value)} />}
                                 onChange={(next) => void onBoardFieldCommit(row.id, { sheetSize: next })}
                                 className="h-9 rounded-[8px] border px-2 text-[12px]"
                                 style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
@@ -63412,7 +63900,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     }}
                   >
                     <span className="truncate">{selectedNestingMachine?.name ?? "Machine"}</span>
-                    <ChevronDown size={14} className="shrink-0" />
+                    <ChevronDown size={14} className={`shrink-0 transition-transform duration-150 motion-reduce:transition-none ${nestingMachineMenuOpen ? "rotate-180" : ""}`} />
                   </button>
                   {nestingMachineMenuPortal}
                 </div>
@@ -65005,8 +65493,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </label>
           ))}
         </div>
-        <div className="grid grid-cols-[92px_1fr] items-center gap-2">
-          <p className="font-semibold" style={{ color: "var(--text-main)" }}>New Drawer Type</p>
+        <div className="grid grid-cols-[120px_minmax(0,1fr)] items-center gap-2">
+          <p className="whitespace-nowrap font-semibold" style={{ color: "var(--text-main)" }}>New Drawer Type</p>
           <GlassSelectDropdown
             fullWidth
             disabled={disabled}
@@ -65017,8 +65505,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
           />
         </div>
-        <div className="grid grid-cols-[92px_1fr] items-center gap-2">
-          <p className="font-semibold" style={{ color: "var(--text-main)" }}>Hinge Type</p>
+        <div className="grid grid-cols-[120px_minmax(0,1fr)] items-center gap-2">
+          <p className="whitespace-nowrap font-semibold" style={{ color: "var(--text-main)" }}>Hinge Type</p>
           <GlassSelectDropdown
             fullWidth
             disabled
@@ -65026,11 +65514,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             options={[hardware.hardwareCategory]}
             onChange={() => {}}
             className="h-7 rounded-[8px] border px-2 text-[12px]"
-            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: "var(--text-main)" }}
+            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
           />
         </div>
-        <div className="grid grid-cols-[92px_1fr] items-start gap-2">
-          <p className="font-semibold" style={{ color: "var(--text-main)" }}>Handles</p>
+        <div className="grid grid-cols-[120px_minmax(0,1fr)] items-start gap-2">
+          <p className="whitespace-nowrap font-semibold" style={{ color: "var(--text-main)" }}>Handles</p>
           <div className="flex flex-col items-start gap-2 pt-[1px]">
             <label className="inline-flex items-center gap-2" style={{ color: "var(--text-main)" }}>
               <input
@@ -67671,7 +68159,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   <p
                                     key={`im_entry_header_${col.key}`}
                                     className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
-                                    style={col.key === "clashing" ? initialCutlistEntryCellStyle("clashing", 2) : initialCutlistEntryCellStyle(col.key)}
+                                    style={col.key === "clashing" ? initialCutlistEntryCellStyle("clashing", 3) : initialCutlistEntryCellStyle(col.key)}
                                   >
                                     {col.label}
                                   </p>
@@ -67698,10 +68186,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.width} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, width: dimensionMathText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("width") }} />
                               <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.depth} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, depth: dimensionMathText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("depth") }} />
                               <input disabled={salesReadOnly} inputMode="numeric" pattern="[0-9]*" value={initialCutlistEntry.quantity} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, quantity: wholeMathText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("quantity") }} />
-                              <div style={initialCutlistEntrySubCellStyle("clashing", 0)}>
+                              <div aria-hidden="true" style={initialCutlistEntrySubCellStyle("clashing", 0)} />
+                              <div style={initialCutlistEntrySubCellStyle("clashing", 1)}>
                                 <BoardPillDropdown value={initialCutlistEntry.clashLeft ?? ""} options={CLASH_LEFT_OPTIONS} disabled={salesReadOnly} bg={activeInitialCutlistEntryFieldBg} border={activeInitialCutlistEntryFieldBorder} text={activeInitialCutlistEntryTextColor} size="default" getSize={() => ""} getLabel={(v) => v} onChange={(v) => setInitialCutlistEntry((prev) => ({ ...prev, clashLeft: v }))} />
                               </div>
-                              <div style={initialCutlistEntrySubCellStyle("clashing", 1)}>
+                              <div style={initialCutlistEntrySubCellStyle("clashing", 2)}>
                                 <BoardPillDropdown value={initialCutlistEntry.clashRight ?? ""} options={CLASH_RIGHT_OPTIONS} disabled={salesReadOnly} bg={activeInitialCutlistEntryFieldBg} border={activeInitialCutlistEntryFieldBorder} text={activeInitialCutlistEntryTextColor} size="default" getSize={() => ""} getLabel={(v) => v} onChange={(v) => setInitialCutlistEntry((prev) => ({ ...prev, clashRight: v }))} />
                               </div>
                               <input disabled={salesReadOnly} value={initialCutlistEntry.information} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, information: e.target.value }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px]" placeholder="Information" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("information") }} />
@@ -68013,7 +68502,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           ? "xl:pr-[356px]"
                           : "xl:pr-5"
                       }`
-                    : "relative isolate mt-3 w-full max-w-[1120px] space-y-4 px-3 pb-4 sm:px-4 md:px-5 xl:mt-5 xl:pl-0 xl:pr-5"
+                    : // (The overview a little wider when there's an Edge Tape card, so on a wide screen it fits beside Board Settings.)
+                      `relative isolate mt-3 w-full ${productionNav === "overview" && showEdgeTapeCard ? "max-w-[1360px]" : "max-w-[1120px]"} space-y-4 px-3 pb-4 sm:px-4 md:px-5 xl:mt-5 xl:pl-0 xl:pr-5`
                 }
               >
                 {productionUnlockRequestsBanner}
@@ -68143,7 +68633,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             const rowIsConfiguredDoor = isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual";
                             const doorPieces = rowIsConfiguredDoor ? buildConfiguredDoorListSubrows(row) : [];
                             const rowBoardAllowsGrain = productionBoardAllowsGrainForValue(String(row.board ?? "").trim());
-                            const rowGrainValue = String(row.grainValue ?? "").trim();
+                            const rowGrainValue = rowBoardAllowsGrain ? String(row.grainValue ?? "").trim() : "";
                             const clashingValue = joinClashing(row.clashLeft ?? "", row.clashRight ?? "") || row.clashing || "-";
                             const hasFixedShelf = Number(row.fixedShelf || 0) > 0;
                             const hasAdjustableShelf = Number(row.adjustableShelf || 0) > 0;
@@ -68481,7 +68971,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     <p
                                       key={`single_header_${col.key}`}
                                       className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
-                                      style={col.key === "clashing" ? cutlistEntryCellStyle("clashing", 2) : cutlistEntryCellStyle(col.key)}
+                                      style={col.key === "clashing" ? cutlistEntryCellStyle("clashing", 3) : cutlistEntryCellStyle(col.key)}
                                     >
                                       {col.key === "clashing" ? (singleEntryShowsShelvesHeader ? "Shelves" : "Clashing") : col.label}
                                     </p>
@@ -68866,7 +69356,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             )}
                               <input ref={registerCutlistWarnCellRef("single", "quantity")} disabled={productionReadOnly || (isDrawerPartType(cutlistEntry.partType) && !isDoorPartType(cutlistEntry.partType))} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => { const nextQuantity = wholeMathText(e.target.value); setCutlistEntry((prev) => ({ ...prev, quantity: nextQuantity, hingeSide: deriveDoorHingeSideForQuantity(prev.partType, nextQuantity) ?? prev.hingeSide })); }} className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...cutlistEntryCellStyle("quantity") }} />
                             <>
-                              <div style={cutlistEntrySubCellStyle("clashing", 0)}>
+                              <div aria-hidden="true" style={cutlistEntrySubCellStyle("clashing", 0)} />
+                              <div style={cutlistEntrySubCellStyle("clashing", 1)}>
                                 <BoardPillDropdown
                                   value={cutlistEntry.clashLeft ?? ""}
                                   options={CLASH_LEFT_OPTIONS}
@@ -68880,7 +69371,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   onChange={(v) => setCutlistEntry((prev) => ({ ...prev, clashLeft: v }))}
                                 />
                               </div>
-                              <div style={cutlistEntrySubCellStyle("clashing", 1)}>
+                              <div style={cutlistEntrySubCellStyle("clashing", 2)}>
                                 <BoardPillDropdown
                                   value={cutlistEntry.clashRight ?? ""}
                                   options={CLASH_RIGHT_OPTIONS}
@@ -69412,7 +69903,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                   )}
                                                 </div>
                                               ) : (
-                                                row.clashing
+                                                renderPieceEdgesCell(row, "production", row.clashing, productionReadOnly)
                                               )
                                             )}
                                           </td>
@@ -69671,7 +70162,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                                 >
                                   <span className="truncate">{selectedNestingMachine?.name ?? "Machine"}</span>
-                                  <ChevronDown size={13} className="shrink-0" />
+                                  <ChevronDown size={13} className={`shrink-0 transition-transform duration-150 motion-reduce:transition-none ${nestingMachineMenuOpen ? "rotate-180" : ""}`} />
                                 </button>
                                 {nestingMachineMenuPortal}
                               </div>
@@ -69964,7 +70455,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         { label: "Panel Thickness", key: "panelThickness" as const },
                         { label: "Fronts Thickness", key: "frontsThickness" as const },
                       ].map((item) => (
-                        <div key={item.key} className="grid grid-cols-[1fr_78px_26px] items-center gap-2">
+                        <div key={item.key} className="grid grid-cols-[1fr_96px] items-center gap-2">
                           <p className="font-semibold" style={{ color: "var(--text-main)" }}>{item.label}</p>
                             <GlassSelectDropdown
                               fullWidth
@@ -69972,6 +70463,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               value={productionForm.existing[item.key]}
                               options={["", ...boardThicknessOptions]}
                               getLabel={(opt) => (opt ? activeLength(opt, { withUnit: false }) : "")}
+                              fieldSuffix={activeUnitLabel()}
                               onChange={(next) => {
                                 const nextForm = { ...productionForm, existing: { ...productionForm.existing, [item.key]: next } };
                                 setProductionForm(nextForm);
@@ -69980,7 +70472,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               className="h-7 rounded-[8px] border px-2 text-[12px]"
                               style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                             />
-                            <p className="font-semibold" style={{ color: "var(--text-main)" }}>{activeUnitLabel()}</p>
                         </div>
                       ))}
                     </div>
@@ -70000,7 +70491,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         { label: "Foot Distance Back", key: "footDistanceBack" as const },
                         { label: "Foot Height", key: "footHeight" as const },
                       ].map((item) => (
-                        <div key={item.key} className="grid grid-cols-[1fr_58px_26px] items-center gap-2">
+                        <div key={item.key} className="grid grid-cols-[1fr_80px] items-center gap-2">
                           <p className="font-semibold text-[var(--text-main)]">{item.label}</p>
                             <LengthField
                               disabled={productionReadOnly}
@@ -70008,15 +70499,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               onChangeMm={(mm) => onCabinetryDraftChange(item.key, mm)}
                               onBlur={() => void onCabinetryBlurSave()}
                               unit={activeUnit()}
-                              showUnit={false}
-                              width={58}
+                              width={80}
                               className="h-7 w-full rounded-[8px] border px-2 text-[12px]"
                               style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                             />
-                            <p className="font-semibold" style={{ color: "var(--text-main)" }}>{activeUnitLabel()}</p>
                         </div>
                       ))}
-                        <div className="grid grid-cols-[1fr_58px_58px_26px] items-center gap-2">
+                        <div className="grid grid-cols-[1fr_58px_80px] items-center gap-2">
                             <p className="font-semibold text-[var(--text-main)]">Hob Centre</p>
                             <GlassSelectDropdown
                               fullWidth
@@ -70037,18 +70526,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             onChangeMm={(mm) => onCabinetryDraftChange("hobCentre", mm)}
                             onBlur={() => void onCabinetryBlurSave()}
                             unit={activeUnit()}
-                            showUnit={false}
-                            width={58}
+                            width={80}
                             className="h-7 w-full rounded-[8px] border px-2 text-[12px]"
                             style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                             />
-                            <p className="font-semibold" style={{ color: "var(--text-main)" }}>{activeUnitLabel()}</p>
                         </div>
                         <div className="grid grid-cols-[1fr_auto] items-center gap-2">
                           <p className="font-semibold text-[var(--text-main)]">Top Scribers</p>
                           <div className="flex items-center gap-2 font-semibold" style={{ color: "var(--text-main)" }}>
                             <span>No</span>
                             <QuoteExtraToggleSwitch
+                              size="medium"
                               checked={Boolean(productionForm.cabinetry.topScribers)}
                               onChange={(next) => void onCabinetryTopScribersChange(next)}
                               disabled={productionReadOnly}

@@ -1,4 +1,5 @@
 import type { CutlistShape } from "@/lib/cutlist-shape";
+import type { RowEdges } from "@/lib/edge-tapes";
 
 export type DoorModeValue = "" | "manual" | "door" | "drawer";
 
@@ -40,6 +41,9 @@ export type CutlistRow = {
   clashing: string;
   clashLeft?: string;
   clashRight?: string;
+  // Which of its edges exactly are clashed, and each one's tape (lib/edge-tapes.ts) — picked on its drawing in the cutlist.
+  // Its Clashing (clashLeft / clashRight) still counts them; without this, they're the usual ones (1L the first long edge).
+  edges?: RowEdges;
   fixedShelf?: string;
   adjustableShelf?: string;
   fixedShelfDrilling?: string;

@@ -311,6 +311,15 @@ body[data-theme="dark"].cs-app .bg-white {
   background-color: var(--panel-bg) !important;
 }
 
+/* Every on/off switch's knob: white — and in dark mode the text's own colour, light enough that a switch never looks
+   greyed out (as .bg-white it became a dark dot on the dark track). */
+.cs-switch-knob {
+  background-color: #ffffff;
+}
+body[data-theme="dark"] .cs-switch-knob {
+  background-color: var(--text-main) !important;
+}
+
 body[data-theme="dark"].cs-app .bg-\[\#F8FAFC\],
 body[data-theme="dark"].cs-app .bg-\[\#F7F8FC\],
 body[data-theme="dark"].cs-app .bg-\[\#F8FAFD\],
@@ -479,8 +488,9 @@ body[data-theme="dark"].cs-app input.cs-frontbank-ghost::placeholder {
   font-style: italic;
 }
 
+/* (Not .shadow-none — a box meant to have no shadow, such as a notes editor's frame, kept without one.) */
 body[data-theme="dark"].cs-app .shadow-xl,
-body[data-theme="dark"].cs-app [class*="shadow-"] {
+body[data-theme="dark"].cs-app [class*="shadow-"]:not(.shadow-none) {
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35) !important;
 }
 

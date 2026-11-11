@@ -4848,7 +4848,7 @@ export function AppShell({
                   }}
                 >
                   <span
-                    className="absolute top-[3px] h-3 w-3 rounded-full bg-white shadow-[0_1px_2px_rgba(0,0,0,0.25)] transition-[left] duration-200"
+                    className="cs-switch-knob absolute top-[3px] h-3 w-3 rounded-full shadow-[0_1px_2px_rgba(0,0,0,0.25)] transition-[left] duration-200"
                     style={{ left: newProjectIsSmallJob ? 15 : 3 }}
                   />
                 </span>

@@ -655,7 +655,13 @@ export async function seedPreviewDatabase(db: Firestore): Promise<void> {
     boardThicknesses: [3, 6, 9, 12, 16, 18, 25, 30],
     boardFinishes: ["Naturale", "Woodgrain", "Matt", "Gloss"],
     boardMaterialUsage: {
-      colours: BOARDS.map((board) => ({ value: board.colour, count: 4, edgings: [{ value: "Matching", count: 4 }] })),
+      colours: BOARDS.map((board) => ({
+        value: board.colour,
+        count: 4,
+        edgings: [{ value: "Matching", count: 4 }],
+        thicknesses: [{ value: board.thickness, count: 3 }, { value: board.thickness === "18" ? "16" : "18", count: 1 }],
+        finishes: [{ value: board.finish, count: 4 }],
+      })),
     },
     contractors: ["Peak Electrical", "Stoneworks Benchtops", "Clearview Glass"],
     cutlistColumnsByContext: {

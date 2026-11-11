@@ -99,7 +99,10 @@ export function SearchClearButtons() {
         padding: "0",
         margin: "0",
         cursor: "pointer",
-        zIndex: "2147483000",
+        // The top layer, as the menus whose search boxes it sits in are (a dropdown's search — the staff picker's, a piece's
+        // edge menu's): below them it'd be hidden under its own box. Safe so high, as it's only shown when nothing's over
+        // its box (place's check), and as it's added after the menu, it's the one drawn on top.
+        zIndex: "2147483647",
         // Just the X: no background, in the grey of the box's search icon.
         color: "var(--text-muted)",
         backgroundColor: "transparent",

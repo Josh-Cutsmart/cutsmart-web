@@ -22,12 +22,23 @@ export type CutlistListTone = {
   strip: string;
 };
 
+// A board's shortened sheet size ("2.4") in a small bubble, before its name.
+function BoardSizeChip({ size, bg }: { size: string; bg: string }) {
+  return (
+    <span className="inline-flex h-5 min-w-[28px] shrink-0 items-center justify-center rounded-[999px] px-2 text-[10px] font-medium" style={{ backgroundColor: bg }}>
+      {size}
+    </span>
+  );
+}
+
 export type CutlistListCardData = {
   id: string;
   name: string;
   // A Custom piece: its own part type's pill.
   pill?: { label: string; bg: string; text: string } | null;
   board: string;
+  // Its board's sheet size, shortened ("2.4") — the bubble before its name, as the Cutlist Entry shows a board.
+  boardSize?: string;
   // Under the name, after the board: its clashing — a Cabinetry part's "Base · 1 adj".
   extra: string;
   height: string;
@@ -263,7 +274,10 @@ export function CutlistListView({
                           <div className="grid min-h-[48px] items-center gap-x-3 py-1.5 pl-4 pr-1 text-[13px] font-medium" style={{ gridTemplateColumns: tableTemplate }}>
                             {selecting ? <SelectCircle on={picked} /> : null}
                             {nameBlock}
-                            <span className="truncate">{card.board || "-"}</span>
+                            <span className="flex min-w-0 items-center gap-1.5">
+                              {card.boardSize ? <BoardSizeChip size={card.boardSize} bg={tone.chipBg} /> : null}
+                              <span className="truncate">{card.board || "-"}</span>
+                            </span>
                             <CutlistHwdSize height={card.height} width={card.width} depth={card.depth} captions={card.captions} grain={card.grain} />
                             <span className="text-center">{card.qty || "-"}</span>
                             {columns.clashing ? <span className="truncate">{card.clashing || card.extra || "-"}</span> : null}
@@ -276,8 +290,11 @@ export function CutlistListView({
                             {selecting ? <SelectCircle on={picked} /> : null}
                             <div className="min-w-0 flex-1">
                               {nameBlock}
-                              <p className="mt-0.5 truncate text-[12px] font-medium opacity-80">
-                                {[card.board || "No board", card.extra, columns.room ? card.room : ""].filter(Boolean).join(" · ")}
+                              <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] font-medium">
+                                {card.boardSize ? <BoardSizeChip size={card.boardSize} bg={tone.chipBg} /> : null}
+                                <span className="truncate opacity-80">
+                                  {[card.board || "No board", card.extra, columns.room ? card.room : ""].filter(Boolean).join(" · ")}
+                                </span>
                               </p>
                             </div>
                             <div className="flex shrink-0 items-center gap-2">

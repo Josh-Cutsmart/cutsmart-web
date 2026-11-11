@@ -22,6 +22,7 @@ import {
   Timestamp,
   type QueryDocumentSnapshot,
   updateDoc,
+  increment,
   where,
   writeBatch,
 } from "@/lib/firestore-client";
@@ -7339,6 +7340,48 @@ export async function snoozeUserNotification(uid: string, notificationId: string
       updatedAt: serverTimestamp(),
       updatedAtIso: new Date().toISOString(),
     });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// An edge tape picked (a board's Edging in Board Settings, or an edge of a piece on its drawing): one more on its count in
+// the company's edgeTapePicks — one exact step up on the server, so two people picking at once both count — so the most
+// picked come first (lib/edge-tapes.ts' edgeTapesByPicks). Best-effort: a count that didn't go up changes nothing else.
+export async function bumpEdgeTapePick(companyId: string, tapeId: string): Promise<void> {
+  const cid = String(companyId || "").trim();
+  const id = String(tapeId || "").trim();
+  if (!db || !cid || !id || id.includes(".")) return;
+  try {
+    await updateDoc(doc(db, "companies", cid), { [`edgeTapePicks.${id}`]: increment(1) });
+  } catch {
+    // (Its order in the lists just doesn't move this time.)
+  }
+}
+
+// An edge tape added from a piece's drawing in the cutlist (its edge menu's +): onto the end of the company's library
+// (Company Settings › Materials & Boards' Edge tape library), as one step on the server — so nothing else in the list,
+// or anyone else's tape added at the same time, is touched.
+export async function addEdgeTapeToLibrary(
+  companyId: string,
+  tape: { id: string; name: string; thicknessMm: number; widthMm: number },
+): Promise<boolean> {
+  const cid = String(companyId || "").trim();
+  const id = String(tape.id || "").trim();
+  if (!db || !cid || !id || id.includes(".")) return false;
+  try {
+    await updateDoc(doc(db, "companies", cid), {
+      edgeTapeLibrary: arrayUnion({
+        id,
+        name: String(tape.name || "").trim(),
+        thicknessMm: Number(tape.thicknessMm) > 0 ? Number(tape.thicknessMm) : 0,
+        widthMm: Number(tape.widthMm) > 0 ? Number(tape.widthMm) : 0,
+      }),
+      updatedAt: serverTimestamp(),
+      updatedAtIso: new Date().toISOString(),
+    });
+    invalidateCompanyCache(cid);
     return true;
   } catch {
     return false;

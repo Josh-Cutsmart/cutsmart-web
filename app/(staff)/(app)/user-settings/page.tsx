@@ -104,7 +104,7 @@ function SettingsToggleSwitch({
       }}
     >
       <span
-        className="inline-block h-[22px] w-[22px] rounded-full shadow transition-transform"
+        className="cs-switch-knob inline-block h-[22px] w-[22px] rounded-full shadow transition-transform"
         style={{ backgroundColor: "#FFFFFF", transform: checked ? "translateX(22px)" : "translateX(2px)" }}
       />
     </button>
