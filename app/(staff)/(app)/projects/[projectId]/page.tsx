@@ -10,7 +10,7 @@ import { haptic } from "@/lib/haptics";
 import { createPortal, flushSync } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, BadgePercent, Box, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, CloudCheck, CloudOff, CloudUpload, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, EyeOff, File as FileIcon, FileSpreadsheet, FileUp, FileText, FolderSearch, GitBranch, Eraser, GripVertical, HardHat, History as HistoryIcon, Image as ImageIcon, ImagePlus, Import as ImportIcon, Inbox, Info, Layers, Link2, ListChecks, Lock, Mail, MapPin, Maximize2, Minimize2, Minus, Package, PanelRightClose, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, QrCode, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, BadgePercent, Box, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, CloudCheck, CloudOff, CloudUpload, Copy, CopyPlus, Cpu, DollarSign, Download, ExternalLink, Eye, EyeOff, FolderInput, File as FileIcon, FileSpreadsheet, FileUp, FileText, FolderSearch, GitBranch, Eraser, GripVertical, HardHat, History as HistoryIcon, Image as ImageIcon, ImagePlus, Import as ImportIcon, Inbox, Info, Layers, Link2, ListChecks, Lock, Mail, MapPin, Maximize2, Minimize2, Minus, Package, PanelRightClose, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, QrCode, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
 import type { DecoupledEditor, ModelWriter } from "ckeditor5";
 import type { RichText as ExcelRichText } from "exceljs";
 import type JSZip from "jszip";
@@ -31,10 +31,14 @@ import { ProductionUnlockCountdown } from "@/components/production-unlock-countd
 import { QuoteDiscountAnswerBox, QuoteDiscountPrompt } from "@/components/quote-discount-box";
 import { PieceEdgesZoom, type PieceEdgeTapeOption } from "@/components/piece-edges-zoom";
 import { EdgeTapeMenu, type EdgeTapeMenuOption, type NewEdgeTape } from "@/components/edge-tape-menu";
+import { PieceContextMenu, type PieceMenuItem } from "@/components/piece-context-menu";
+import { ScrollWhenIdleInput } from "@/components/scroll-when-idle-input";
+import { addCutlistRowHistory, fetchCutlistRowHistory, type CutlistHistoryEntry } from "@/lib/cutlist-history";
 import {
   clashingFromEdges,
   differentTapeRuns,
   edgesForSizeChange,
+  pieceDrawnSize,
   edgeSide,
   edgeTapeLabel,
   edgeTapesByPicks,
@@ -241,7 +245,8 @@ import { CutlistSheet } from "@/components/cutlist-mobile/cutlist-sheet";
 import { ContractorIcon, normalizeContractorIcons } from "@/components/contractor-icon";
 import { DimensionMathBar } from "@/components/cutlist-mobile/dimension-math-bar";
 import { KitchenDrawing, type KitchenFront, type KitchenUnit } from "@/components/kitchen-drawing";
-import { dimensionMathText, evaluateDimensionMath, wholeMathText } from "@/lib/dimension-math";
+import { dimensionMathText, evaluateDimensionMath, normalizeRowSums, SUM_FIELDS, sumShownFor, wholeMathText, type SumField } from "@/lib/dimension-math";
+import { useSumHoverTip } from "@/components/sum-hover-tip";
 import { CutlistMixBar, CutlistRoomBar, CutlistRoomRail, CutlistRoomSlide, CutlistRoomsSheet, formatPartsLabel, type CutlistRoomItem } from "@/components/cutlist-mobile/cutlist-rooms";
 import { CutlistEntryCard, CutlistHwdSize, CutlistNotesButton, CutlistViewSwitch, useAutoFoldDrafts, type CutlistCardTone } from "@/components/cutlist-mobile/cutlist-entry";
 import { CutlistListToolbar, CutlistListView, type CutlistListCardData, type CutlistListGroupData } from "@/components/cutlist-mobile/cutlist-list";
@@ -4964,6 +4969,10 @@ type NestingSheetLayout = {
   placements: NestingSheetPlacement[];
 };
 
+// The rectangle packer's winning arrangement for a set of pieces and a sheet — the order it took them in and how it
+// placed them — so the same pieces aren't searched again on every change (only laid out again, in that order).
+const NESTING_PACK_TRY_CACHE = new Map<string, { orderKeys: string[]; heuristic: "bssf" | "baf" | "bl"; bin: "best" | "first" }>();
+
 // "guillotine" (the only mode this function ever had until machine-aware nesting) is what a table
 // saw needs: every cut this produces is a full straight line across whatever rectangle it's cutting,
 // because commitRectPlacement below only ever splits the ONE free rect a piece landed in, in half —
@@ -5066,6 +5075,7 @@ function computeNestingSheetLayouts(
     totalArea: number;
     minEdge: number;
   };
+  const perimeterOf = (bundle: PlacementBundle) => bundle.pieces.reduce((sum, piece) => sum + piece.width + piece.height, 0);
 
   const groupedPieces = new Map<string, NestingFlatPiece[]>();
   const bundles: PlacementBundle[] = [];
@@ -5107,7 +5117,6 @@ function computeNestingSheetLayouts(
 
   type FreeRect = { x: number; y: number; w: number; h: number };
   type SheetState = { index: number; placements: NestingSheetPlacement[]; freeRects: FreeRect[] };
-  const sheets: SheetState[] = [];
   type CompositeBundlePlacement = {
     mode: "composite";
     placements: NestingSheetPlacement[];
@@ -5157,6 +5166,12 @@ function computeNestingSheetLayouts(
     };
   };
 
+  const hasShapedPiece = pieces.some(
+    (piece) => Boolean(piece.row.shape) && piece.trueWidth >= minPieceMm - 0.001 && piece.trueHeight >= minPieceMm - 0.001,
+  );
+  if (placementMode === "true-shape" && !hasShapedPiece) {
+    return computeNestingSheetLayouts(rows, innerW, innerH, kerf, minPieceMm, "maxrects");
+  }
   if (placementMode === "true-shape") {
     // Each piece as an outline in its box: a shaped one its own (not one below the machine's minimum — that's packed by
     // its reserved box, as it always was), anything else a rectangle.
@@ -5230,58 +5245,55 @@ function computeNestingSheetLayouts(
   // a free rect that much bigger too, or one put in the gap left of or above a placed piece would end up touching it.
   // The sheet is that much bigger to match (a piece's own kerf can run off its far edge). Guillotine: as it always was.
   const fitPad = placementMode === "maxrects" ? kerf : 0;
-  const createSheet = (): SheetState => ({
-    index: sheets.length + 1,
+  const createSheet = (index: number): SheetState => ({
+    index,
     placements: [],
     freeRects: [{ x: 0, y: 0, w: innerW + fitPad, h: innerH + fitPad }],
   });
 
+  // Where on a sheet a piece goes — scored three ways, each tried (the best whole layout kept, below):
+  //   "bssf": the free space it fits most snugly along its tighter side (then the least space left round it);
+  //   "baf": the free space it fills most of;
+  //   "bl": with its far edge as near the sheet's top as it'll go, then as far left — rows of pieces lying flat in line,
+  //   a big offcut left below (a strip isn't stood on end just because that fills a gap's height more snugly).
+  type PlaceHeuristic = "bssf" | "baf" | "bl";
+  type Score = [number, number, number, number];
+  const scoreFor = (heuristic: PlaceHeuristic, rect: FreeRect, w: number, h: number): Score => {
+    const leftoverW = rect.w - w - fitPad;
+    const leftoverH = rect.h - h - fitPad;
+    if (heuristic === "baf") return [rect.w * rect.h - w * h, Math.min(leftoverW, leftoverH), rect.y, rect.x];
+    if (heuristic === "bl") return [rect.y + h, rect.x, Math.min(leftoverW, leftoverH), leftoverW * leftoverH];
+    return [Math.min(leftoverW, leftoverH), leftoverW * leftoverH, rect.y, rect.x];
+  };
+  const scoreLess = (a: Score, b: Score) => {
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] < b[i] - 0.001) return true;
+      if (a[i] > b[i] + 0.001) return false;
+    }
+    return false;
+  };
+
   const placeOnSheet = (
     sheet: SheetState,
     piece: NestingFlatPiece,
-  ): { placement: NestingSheetPlacement; score: [number, number, number, number]; freeRectIndex: number } | null => {
-    let best:
-      | { placement: NestingSheetPlacement; score: [number, number, number, number]; freeRectIndex: number }
-      | null = null;
+    heuristic: PlaceHeuristic,
+  ): { placement: NestingSheetPlacement; score: Score; freeRectIndex: number } | null => {
+    let best: { placement: NestingSheetPlacement; score: Score; freeRectIndex: number } | null = null;
     const grainLocked = toPositiveNum(piece.row.grainValue) > 0;
+    const orientations = grainLocked
+      ? [{ w: piece.width, h: piece.height, rotated: false }]
+      : [
+          { w: piece.width, h: piece.height, rotated: false },
+          { w: piece.height, h: piece.width, rotated: true },
+        ];
     for (let rectIdx = 0; rectIdx < sheet.freeRects.length; rectIdx += 1) {
       const rect = sheet.freeRects[rectIdx];
-      const orientations = grainLocked
-        ? [{ w: piece.width, h: piece.height, rotated: false }]
-        : [
-            { w: piece.width, h: piece.height, rotated: false },
-            { w: piece.height, h: piece.width, rotated: true },
-          ];
       for (const orientation of orientations) {
-        const w = orientation.w;
-        const h = orientation.h;
+        const { w, h } = orientation;
         if (w + fitPad > rect.w + 0.001 || h + fitPad > rect.h + 0.001) continue;
-        const leftoverW = rect.w - w - fitPad;
-        const leftoverH = rect.h - h - fitPad;
-        const score: [number, number, number, number] = [
-          Math.min(leftoverW, leftoverH),
-          leftoverW * leftoverH,
-          rect.y,
-          rect.x,
-        ];
-        const placement: NestingSheetPlacement = {
-          piece,
-          x: rect.x,
-          y: rect.y,
-          w,
-          h,
-          rotated: orientation.rotated,
-        };
-        if (
-          !best ||
-          score[0] < best.score[0] - 0.001 ||
-          (Math.abs(score[0] - best.score[0]) <= 0.001 && score[1] < best.score[1] - 0.001) ||
-          (Math.abs(score[0] - best.score[0]) <= 0.001 &&
-            Math.abs(score[1] - best.score[1]) <= 0.001 &&
-            (score[2] < best.score[2] - 0.001 ||
-              (Math.abs(score[2] - best.score[2]) <= 0.001 && score[3] < best.score[3] - 0.001)))
-        ) {
-          best = { placement, score, freeRectIndex: rectIdx };
+        const score = scoreFor(heuristic, rect, w, h);
+        if (!best || scoreLess(score, best.score)) {
+          best = { placement: { piece, x: rect.x, y: rect.y, w, h, rotated: orientation.rotated }, score, freeRectIndex: rectIdx };
         }
       }
     }
@@ -5377,6 +5389,7 @@ function computeNestingSheetLayouts(
   const placeBundleOnSheet = (
     sheet: SheetState,
     bundle: PlacementBundle,
+    heuristic: PlaceHeuristic,
   ): CompositeBundlePlacement | SequentialBundlePlacement | null => {
     const lockedLayout = getLockedConfiguredBundleLayout(bundle);
     if (lockedLayout) {
@@ -5384,39 +5397,14 @@ function computeNestingSheetLayouts(
       for (let rectIdx = 0; rectIdx < sheet.freeRects.length; rectIdx += 1) {
         const rect = sheet.freeRects[rectIdx];
         if (lockedLayout.footprintW + fitPad > rect.w + 0.001 || lockedLayout.footprintH + fitPad > rect.h + 0.001) continue;
-        const leftoverW = rect.w - lockedLayout.footprintW - fitPad;
-        const leftoverH = rect.h - lockedLayout.footprintH - fitPad;
-        const score: [number, number, number, number] = [
-          Math.min(leftoverW, leftoverH),
-          leftoverW * leftoverH,
-          rect.y,
-          rect.x,
-        ];
-        const placements = lockedLayout.placements.map((placement) => ({
-          ...placement,
-          x: rect.x + placement.x,
-          y: rect.y + placement.y,
-        }));
-        if (
-          !best ||
-          score[0] < best.score[0] - 0.001 ||
-          (Math.abs(score[0] - best.score[0]) <= 0.001 && score[1] < best.score[1] - 0.001) ||
-          (Math.abs(score[0] - best.score[0]) <= 0.001 &&
-            Math.abs(score[1] - best.score[1]) <= 0.001 &&
-            (score[2] < best.score[2] - 0.001 ||
-              (Math.abs(score[2] - best.score[2]) <= 0.001 && score[3] < best.score[3] - 0.001)))
-        ) {
+        const score = scoreFor(heuristic, rect, lockedLayout.footprintW, lockedLayout.footprintH);
+        if (!best || scoreLess(score, best.score)) {
           best = {
             mode: "composite",
-            placements,
+            placements: lockedLayout.placements.map((placement) => ({ ...placement, x: rect.x + placement.x, y: rect.y + placement.y })),
             score,
             freeRectIndex: rectIdx,
-            commitRect: {
-              x: rect.x,
-              y: rect.y,
-              w: lockedLayout.footprintW,
-              h: lockedLayout.footprintH,
-            },
+            commitRect: { x: rect.x, y: rect.y, w: lockedLayout.footprintW, h: lockedLayout.footprintH },
           };
         }
       }
@@ -5424,9 +5412,9 @@ function computeNestingSheetLayouts(
     }
 
     const shadow = cloneSheetState(sheet);
-    const placements: Array<{ placement: NestingSheetPlacement; freeRectIndex: number; score: [number, number, number, number] }> = [];
+    const placements: Array<{ placement: NestingSheetPlacement; freeRectIndex: number; score: Score }> = [];
     for (const piece of bundle.pieces) {
-      const choice = placeOnSheet(shadow, piece);
+      const choice = placeOnSheet(shadow, piece, heuristic);
       if (!choice) return null;
       placements.push(choice);
       commitPlacement(shadow, choice);
@@ -5435,62 +5423,159 @@ function computeNestingSheetLayouts(
     return last ? { mode: "sequential", placements, score: last.score } : null;
   };
 
-  for (const bundle of bundles) {
-    let bestSheetChoice:
-      | (CompositeBundlePlacement & { sheetIndex: number })
-      | (SequentialBundlePlacement & { sheetIndex: number })
-      | null = null;
-
-    for (let sheetIdx = 0; sheetIdx < sheets.length; sheetIdx += 1) {
-      const choice = placeBundleOnSheet(sheets[sheetIdx], bundle);
-      if (!choice) continue;
-      if (
-        !bestSheetChoice ||
-        choice.score[0] < bestSheetChoice.score[0] - 0.001 ||
-        (Math.abs(choice.score[0] - bestSheetChoice.score[0]) <= 0.001 &&
-          (choice.score[1] < bestSheetChoice.score[1] - 0.001 ||
-            (Math.abs(choice.score[1] - bestSheetChoice.score[1]) <= 0.001 && sheetIdx < bestSheetChoice.sheetIndex)))
-      ) {
-        bestSheetChoice = { sheetIndex: sheetIdx, ...choice };
+  // One whole layout: the pieces in `order`, each where `heuristic` says on the sheet `bin` picks — "best": whichever
+  // open sheet has the best spot for it; "first": the first open sheet it fits on (filling the early sheets right up,
+  // the space left gathered on the last).
+  type PackBin = "best" | "first";
+  const runPack = (order: PlacementBundle[], heuristic: PlaceHeuristic, bin: PackBin): SheetState[] => {
+    const sheets: SheetState[] = [];
+    for (const bundle of order) {
+      let bestSheetChoice:
+        | (CompositeBundlePlacement & { sheetIndex: number })
+        | (SequentialBundlePlacement & { sheetIndex: number })
+        | null = null;
+      for (let sheetIdx = 0; sheetIdx < sheets.length; sheetIdx += 1) {
+        const choice = placeBundleOnSheet(sheets[sheetIdx], bundle, heuristic);
+        if (!choice) continue;
+        if (bin === "first") {
+          bestSheetChoice = { sheetIndex: sheetIdx, ...choice };
+          break;
+        }
+        if (!bestSheetChoice || scoreLess(choice.score, bestSheetChoice.score)) bestSheetChoice = { sheetIndex: sheetIdx, ...choice };
       }
-    }
 
-    if (!bestSheetChoice) {
-      const newSheet = createSheet();
-      const choice = placeBundleOnSheet(newSheet, bundle);
-      if (choice) {
-        if (choice.mode === "composite") {
-          commitRectPlacement(newSheet, choice.freeRectIndex, choice.commitRect, choice.placements);
+      if (!bestSheetChoice) {
+        const newSheet = createSheet(sheets.length + 1);
+        const choice = placeBundleOnSheet(newSheet, bundle, heuristic);
+        if (choice) {
+          if (choice.mode === "composite") commitRectPlacement(newSheet, choice.freeRectIndex, choice.commitRect, choice.placements);
+          else choice.placements.forEach((placementChoice) => commitPlacement(newSheet, placementChoice));
         } else {
-          choice.placements.forEach((placementChoice) => commitPlacement(newSheet, placementChoice));
+          for (const piece of bundle.pieces) {
+            const singleChoice = placeOnSheet(newSheet, piece, heuristic);
+            if (singleChoice) commitPlacement(newSheet, singleChoice);
+          }
         }
-      } else {
-        for (const piece of bundle.pieces) {
-          const singleChoice = placeOnSheet(newSheet, piece);
-          if (singleChoice) commitPlacement(newSheet, singleChoice);
-        }
+        sheets.push(newSheet);
+        continue;
       }
-      sheets.push(newSheet);
-      continue;
-    }
 
-    if (bestSheetChoice.mode === "composite") {
-      commitRectPlacement(
-        sheets[bestSheetChoice.sheetIndex],
-        bestSheetChoice.freeRectIndex,
-        bestSheetChoice.commitRect,
-        bestSheetChoice.placements,
-      );
-    } else {
-      bestSheetChoice.placements.forEach((placementChoice) =>
-        commitPlacement(sheets[bestSheetChoice.sheetIndex], placementChoice),
-      );
+      const target = sheets[bestSheetChoice.sheetIndex];
+      if (bestSheetChoice.mode === "composite") {
+        commitRectPlacement(target, bestSheetChoice.freeRectIndex, bestSheetChoice.commitRect, bestSheetChoice.placements);
+      } else {
+        bestSheetChoice.placements.forEach((placementChoice) => commitPlacement(target, placementChoice));
+      }
+    }
+    return sheets.filter((sheet) => sheet.placements.length > 0).map((sheet, idx) => ({ ...sheet, index: idx + 1 }));
+  };
+
+  // A layout's worth: fewest sheets first; then the tightest packing (each sheet's pieces in as small a corner as can
+  // be — the area from its top-left to its furthest piece, added up — a strip of pieces in line rather than a piece
+  // stood off on its own); then the biggest offcuts (each sheet's largest free rectangle, added up); then the waste
+  // gathered on one sheet (its least-used sheet as empty as can be).
+  type Worth = [number, number, number, number];
+  const sheetArea = innerW * innerH;
+  const worthOf = (sheets: SheetState[]): Worth => {
+    const corner = sheets.reduce((sum, sheet) => {
+      const right = sheet.placements.reduce((most, placement) => Math.max(most, placement.x + placement.w), 0);
+      const bottom = sheet.placements.reduce((most, placement) => Math.max(most, placement.y + placement.h), 0);
+      return sum + right * bottom;
+    }, 0);
+    const offcuts = sheets.reduce(
+      (sum, sheet) => sum + sheet.freeRects.reduce((most, rect) => Math.max(most, Math.min(rect.w, innerW) * Math.min(rect.h, innerH)), 0),
+      0,
+    );
+    const used = sheets.map((sheet) => sheet.placements.reduce((sum, placement) => sum + placement.w * placement.h, 0));
+    return [sheets.length, corner, -offcuts, used.length ? Math.min(...used) : 0];
+  };
+  const worthLess = (a: Worth, b: Worth) => {
+    if (a[0] !== b[0]) return a[0] < b[0];
+    // (Packing within 1% of a sheet counts as the same — the offcuts then decide.)
+    if (Math.abs(a[1] - b[1]) > sheetArea * 0.01) return a[1] < b[1];
+    if (Math.abs(a[2] - b[2]) > 1) return a[2] < b[2];
+    return a[3] < b[3] - 1;
+  };
+
+  // The orders tried: longest edge first (as it always was), biggest first, widest-narrow-side first, longest round —
+  // and, for a smaller job, strips of the same thickness together (their narrow side, then longest first: two 120mm
+  // toekicks get the chance to go end to end).
+  const orders: PlacementBundle[][] = [
+    [...bundles],
+    [...bundles].sort((a, b) => b.totalArea - a.totalArea || b.maxEdge - a.maxEdge),
+    [...bundles].sort((a, b) => b.minEdge - a.minEdge || b.maxEdge - a.maxEdge),
+    [...bundles].sort((a, b) => perimeterOf(b) - perimeterOf(a) || b.totalArea - a.totalArea),
+    ...(bundles.length <= 80 ? [[...bundles].sort((a, b) => a.minEdge - b.minEdge || b.maxEdge - a.maxEdge)] : []),
+  ];
+  type PackTry = { orderKeys: string[]; heuristic: PlaceHeuristic; bin: PackBin };
+  const bundleByKey = new Map(bundles.map((bundle) => [bundle.key, bundle]));
+  const orderFor = (keys: string[]) => keys.map((key) => bundleByKey.get(key)).filter((bundle): bundle is PlacementBundle => Boolean(bundle));
+
+  // The same pieces (sizes, grain, sets) and sheet as last time: the arrangement that won then, laid out again.
+  const cacheKey = JSON.stringify([
+    placementMode,
+    innerW,
+    innerH,
+    kerf,
+    minPieceMm,
+    bundles.map((bundle) => [bundle.key, bundle.pieces.map((piece) => [piece.width, piece.height, toPositiveNum(piece.row.grainValue) > 0 ? 1 : 0])]),
+  ]);
+  const remembered = NESTING_PACK_TRY_CACHE.get(cacheKey);
+  if (remembered && remembered.orderKeys.length === bundles.length) {
+    const order = orderFor(remembered.orderKeys);
+    if (order.length === bundles.length) {
+      return runPack(order, remembered.heuristic, remembered.bin).map((sheet) => ({ index: sheet.index, placements: sheet.placements }));
     }
   }
 
-  return sheets
-    .filter((sheet) => sheet.placements.length > 0)
-    .map((sheet) => ({ index: sheet.index, placements: sheet.placements }));
+  // Every order × every way of placing × both ways of choosing a sheet (fewer for a big job — it's done as you type).
+  const big = bundles.length > 80;
+  const heuristics: PlaceHeuristic[] = big ? ["bssf", "bl"] : ["bssf", "baf", "bl"];
+  const bins: PackBin[] = big ? ["best"] : ["best", "first"];
+  const best: { tried: PackTry | null; sheets: SheetState[]; worth: Worth | null } = { tried: null, sheets: [], worth: null };
+  const consider = (order: PlacementBundle[], heuristic: PlaceHeuristic, bin: PackBin) => {
+    const result = runPack(order, heuristic, bin);
+    const worth = worthOf(result);
+    if (!best.worth || worthLess(worth, best.worth)) {
+      best.worth = worth;
+      best.sheets = result;
+      best.tried = { orderKeys: order.map((bundle) => bundle.key), heuristic, bin };
+    }
+  };
+  for (const order of orders) for (const heuristic of heuristics) for (const bin of bins) consider(order, heuristic, bin);
+
+  // Still more sheets than the pieces' area needs: some shuffled orders too (biggest-first, loosely), for a while.
+  const totalArea = bundles.reduce((sum, bundle) => sum + bundle.totalArea, 0);
+  const fewestPossible = Math.max(1, Math.ceil(totalArea / Math.max(1, sheetArea)));
+  if (best.worth && best.worth[0] > fewestPossible && bundles.length > 1 && bundles.length <= 120) {
+    let seed = 0x9e3779b1 ^ bundles.length;
+    const random = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      if (now - startedAt > 150) break;
+      const order = bundles
+        .map((bundle) => ({ bundle, weight: bundle.totalArea * (0.6 + random() * 0.8) }))
+        .sort((a, b) => b.weight - a.weight)
+        .map((entry) => entry.bundle);
+      consider(order, heuristics[attempt % heuristics.length], bins[attempt % bins.length]);
+      if (best.worth && best.worth[0] <= fewestPossible) break;
+    }
+  }
+
+  if (best.tried) {
+    NESTING_PACK_TRY_CACHE.set(cacheKey, best.tried);
+    if (NESTING_PACK_TRY_CACHE.size > 200) {
+      const oldest = NESTING_PACK_TRY_CACHE.keys().next().value;
+      if (oldest !== undefined) NESTING_PACK_TRY_CACHE.delete(oldest);
+    }
+  }
+  return best.sheets.map((sheet) => ({ index: sheet.index, placements: sheet.placements }));
 }
 
 function parseDerivedNestingRowId(rowId: string): { parentRowId: string; kind: "cab" | "drw" | "dor" | null; subKey: string } {
@@ -7929,7 +8014,8 @@ function PartNameSuggestionInput({
 
   return (
     <div ref={hostRef} className="relative w-full min-w-0" style={containerStyle}>
-      <input
+      {/* (A name longer than the box scrolls along it while it isn't being typed in, as on the phone.) */}
+      <ScrollWhenIdleInput
         ref={inputRef}
         disabled={disabled}
         autoFocus={autoFocus}
@@ -8369,6 +8455,8 @@ function serializeCutlistRowsForStorage(
         hingeSide: normalizeHingeSideValue(row.hingeSide),
         // (Its edges as picked on its drawing — which exactly, and each one's tape.)
         ...(normalizeRowEdges(row.edges) ? { Edges: normalizeRowEdges(row.edges) } : {}),
+        // (The sums typed in its size boxes that came to what's in them.)
+        ...(normalizeRowSums(row.sums) ? { Sums: normalizeRowSums(row.sums) } : {}),
         Information: row.information,
         Grain: String(row.grainValue || (row.grain ? "Yes" : "")),
         includeInNesting: row.includeInNesting !== false,
@@ -8379,6 +8467,11 @@ function serializeCutlistRowsForStorage(
         ...(row.parentRowId ? { parentRowId: row.parentRowId } : {}),
       };
   });
+}
+
+// A row as its History keeps it (lib/cutlist-history.ts): plain data — no undefined values, its shape as it's stored.
+function cutlistRowForHistory(row: CutlistRow): Record<string, unknown> {
+  return JSON.parse(JSON.stringify({ ...row, shape: row.shape ? cutlistShapeForStorage(row.shape) : null }));
 }
 
 function serializeCutlistRowsSnapshot(rows: CutlistRow[]) {
@@ -8423,6 +8516,7 @@ function serializeCutlistRowsSnapshot(rows: CutlistRow[]) {
         hingesDown: normalizeDoorHingeValues(row.hingesDown),
         hingeSide: normalizeHingeSideValue(row.hingeSide),
         edges: normalizeRowEdges(row.edges) ?? null,
+        sums: normalizeRowSums(row.sums) ?? null,
         information: String(row.information ?? ""),
         grain: Boolean(row.grain),
         grainValue: String(row.grainValue ?? ""),
@@ -10564,28 +10658,6 @@ export default function ProjectDetailsPage() {
     subtitle: string;
     size: string;
   } | null>(null);
-  const nestingPieceMenuRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!nestingPieceMenu) return;
-    const close = () => setNestingPieceMenu(null);
-    const onDown = (e: PointerEvent) => {
-      if (nestingPieceMenuRef.current?.contains(e.target as Node)) return;
-      close();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    document.addEventListener("pointerdown", onDown, true);
-    document.addEventListener("keydown", onKey);
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
-    return () => {
-      document.removeEventListener("pointerdown", onDown, true);
-      document.removeEventListener("keydown", onKey);
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
-    };
-  }, [nestingPieceMenu]);
   // Edit piece (the CNC Cutlist's and Nesting's): the piece's cutlist row being changed in its own pop-up, what's wrong with
   // it once Save was pressed (by field), and whether it's saving.
   const [cutlistPieceEdit, setCutlistPieceEdit] = useState<{
@@ -10593,35 +10665,22 @@ export default function ProjectDetailsPage() {
     draft: CutlistRow;
     issues: Record<string, string>;
     saving: boolean;
+    // (An Initial Measure row's — its boards, part types and grain, saved to Initial Measure. Otherwise Production's.)
+    scope?: "initial";
   } | null>(null);
   // A CNC Cutlist row right-clicked: its menu (Edit piece, Show in the Production Cutlist…), where it was clicked.
   const [cncPieceMenu, setCncPieceMenu] = useState<{ x: number; y: number; rowId: string; title: string; subtitle: string; size: string } | null>(null);
-  const cncPieceMenuRef = useRef<HTMLDivElement | null>(null);
+  // A Cutlist List row right-clicked (a computer's): its menu — Edit piece, Move, Duplicate and more — where it was clicked.
+  const [cutlistRowMenu, setCutlistRowMenu] = useState<{ x: number; y: number; rowId: string } | null>(null);
+  // A Cutlist Entry row right-clicked: its menu — Duplicate, Move, Clear and more.
+  const [entryRowMenu, setEntryRowMenu] = useState<{ x: number; y: number; draftId: string } | null>(null);
+  // ...and Initial Measure's: a List row's menu and an Entry row's, as Production's.
+  const [initialRowMenu, setInitialRowMenu] = useState<{ x: number; y: number; rowId: string } | null>(null);
+  const [initialEntryRowMenu, setInitialEntryRowMenu] = useState<{ x: number; y: number; draftId: string } | null>(null);
   // A yellow bubble at the bottom of the screen a few seconds (Needs attention's look): why a piece couldn't be changed
   // from its menu — its grain turned where it wouldn't fit its sheet.
   const [pieceNotice, setPieceNotice] = useState<{ id: number; text: string } | null>(null);
   const pieceNoticeTimerRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (!cncPieceMenu) return;
-    const close = () => setCncPieceMenu(null);
-    const onDown = (e: PointerEvent) => {
-      if (cncPieceMenuRef.current?.contains(e.target as Node)) return;
-      close();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    document.addEventListener("pointerdown", onDown, true);
-    document.addEventListener("keydown", onKey);
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
-    return () => {
-      document.removeEventListener("pointerdown", onDown, true);
-      document.removeEventListener("keydown", onKey);
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
-    };
-  }, [cncPieceMenu]);
   // Its board header's height — the sheets under it scroll up behind it (glass), so they start that far down.
   const [nestingDesktopHeaderH, setNestingDesktopHeaderH] = useState(0);
   const nestingDesktopHeaderObserverRef = useRef<ResizeObserver | null>(null);
@@ -11319,10 +11378,11 @@ export default function ProjectDetailsPage() {
   const [editingAdjustableShelfDrilling, setEditingAdjustableShelfDrilling] = useState<"No" | "Even Spacing" | "Centre">("No");
   const [editingHingesUp, setEditingHingesUp] = useState<string[]>([]);
   const [editingHingesDown, setEditingHingesDown] = useState<string[]>([]);
-  // Which Door row's read-only Hinges readout is expanded in the Production Cutlist list (empty =
-  // none) — the values sit behind a small dropdown toggle in the Clashing cell rather than always
+  // Which Door rows' read-only Hinges readouts are expanded in the Production Cutlist list (by row id; as many open at
+  // once as you like) — the values sit behind a small dropdown toggle in the Clashing cell rather than always
   // showing, so the cell doesn't grow unless someone actually wants to check the positions.
-  const [expandedDoorHingeRowId, setExpandedDoorHingeRowId] = useState("");
+  const [expandedDoorHingeRows, setExpandedDoorHingeRows] = useState<Record<string, boolean>>({});
+  const toggleDoorHingeRow = (rowId: string) => setExpandedDoorHingeRows((prev) => ({ ...prev, [rowId]: !prev[rowId] }));
   // Expanded hinges show as plain text (matching the rest of the row) until a specific number is
   // double-clicked — only THAT one value becomes an editable textbox, same double-click-to-edit
   // convention as every other cutlist cell, rather than the whole Up/Down group dropping into edit
@@ -11871,11 +11931,16 @@ export default function ProjectDetailsPage() {
     const longest = Math.max(0, ...boardFinishOptions.map((opt) => opt.length));
     return Math.max(80, Math.ceil(longest * 7 + 43));
   }, [boardFinishOptions]);
-  const boardSettingsRowGridTemplate = `28px minmax(100px,1fr) 80px ${boardFinishColumnPx}px 80px 50px 60px 150px 45px 70px`;
   const sheetSizeOptions = useMemo(
     () => normalizeSheetSizes(companyDoc?.sheetSizes),
     [companyDoc?.sheetSizes],
   );
+  // ...and Sheet Size just wide enough for its longest size ("2440 x 1220"), the same way — Colour taking the rest.
+  const boardSheetSizeColumnPx = useMemo(() => {
+    const longest = Math.max(0, ...sheetSizeOptions.map((opt) => `${opt.h} x ${opt.w}`.length));
+    return Math.max(84, Math.ceil(longest * 6.3 + 38));
+  }, [sheetSizeOptions]);
+  const boardSettingsRowGridTemplate = `28px minmax(100px,1fr) 80px ${boardFinishColumnPx}px 80px 50px 60px ${boardSheetSizeColumnPx}px 45px 70px`;
   const hardwareRows = useMemo(
     () => normalizeHardwareRows(companyDoc?.hardwareSettings),
     [companyDoc?.hardwareSettings],
@@ -12393,6 +12458,7 @@ export default function ProjectDetailsPage() {
             // A Custom part type's piece: its shape, as Production's rows keep it (serializeCutlistRowsForStorage's Shape).
             shape: normalizeCutlistShape(item.Shape ?? item.shape),
             edges: normalizeRowEdges(item.Edges ?? item.edges),
+            sums: normalizeRowSums(item.Sums ?? item.sums),
             information: String(item.Information ?? item.information ?? ""),
             grain: grainParsed.grain,
             grainValue: grainParsed.grainValue,
@@ -12859,7 +12925,9 @@ export default function ProjectDetailsPage() {
       return toPrefixed("height", h) || toPrefixed("width", w) || toPrefixed("depth", d) || rowGrainValue;
     }
     if (axis === "width") {
-      if (piece.key === "left_side" || piece.key === "right_side") return toPrefixed("depth", d);
+      // (A cabinet grained along its width: its sides' grain runs up their height — carried round from the top's, along the
+      // width, down the sides. Depth grain runs across the sides — their depth — and height grain up them, as below.)
+      if (piece.key === "left_side" || piece.key === "right_side") return toPrefixed("height", h) || toPrefixed("depth", d);
       if (
         piece.key === "top" ||
         piece.key === "bottom" ||
@@ -13773,10 +13841,58 @@ export default function ProjectDetailsPage() {
   // on Enter: written into the box as if typed (its onChange), and the page brought up to date with it at once
   // (flushSync), so the box's own blur / Enter — saving it, closing it — has the answer, not the sum. (Only boxes taking
   // numbers can hold one: the rest's filters take out + - * x /.)
+  // ...and the sum kept with its row (CutlistRow.sums), to show how its number was worked out on pointing at it: which row
+  // and box it was typed in — a cell marked data-sum-cell ("<row id>::<field>"), or one the cells' registry knows
+  // (registerCutlistWarnCellRef) — put on the Cutlist Entry's row, Initial Measure's or Edit piece's straight away, and
+  // held a moment for a Cutlist List cell (its commit takes it: typedSumPatch).
+  const cutlistCellKeyOfEl = useRef(new WeakMap<HTMLElement, string>());
+  const typedSumsRef = useRef(new Map<string, { sum: string; answer: string }>());
+  const sumCellKeyOf = (el: HTMLElement): string | undefined => el.dataset.sumCell || cutlistCellKeyOfEl.current.get(el);
+  const sumTargetOf = (el: HTMLElement): { rowId: string; field: SumField } | null => {
+    for (let at: HTMLElement | null = el, i = 0; at && i < 4; at = at.parentElement, i += 1) {
+      const key = sumCellKeyOf(at);
+      if (!key) continue;
+      const [rowId, field] = key.split("::");
+      return rowId && (SUM_FIELDS as readonly string[]).includes(field) ? { rowId, field: field as SumField } : null;
+    }
+    return null;
+  };
+  const recordTypedSum = (rowId: string, field: SumField, sum: string, answer: string) => {
+    typedSumsRef.current.set(`${rowId}::${field}`, { sum, answer });
+    const withSum = <T extends CutlistRow>(row: T): T => (row.id === rowId ? { ...row, sums: { ...(row.sums ?? {}), [field]: sum } } : row);
+    setCutlistDraftRows((prev) => (prev.some((row) => row.id === rowId) ? prev.map(withSum) : prev));
+    setInitialCutlistDraftRows((prev) => (prev.some((row) => row.id === rowId) ? prev.map(withSum) : prev));
+    setCutlistPieceEdit((prev) => (prev && prev.draft.id === rowId ? { ...prev, draft: withSum(prev.draft) } : prev));
+  };
+  // A Cutlist List cell's commit: the sum just worked out in it, if what it's saving is that sum's answer.
+  const typedSumPatch = (row: CutlistRow, field: string): Partial<CutlistRow> => {
+    const key = `${row.id}::${field}`;
+    const typed = typedSumsRef.current.get(key);
+    if (!typed || !(SUM_FIELDS as readonly string[]).includes(field)) return {};
+    typedSumsRef.current.delete(key);
+    if (!sumShownFor({ [field]: typed.sum }, field, row[field as SumField])) return {};
+    return { sums: { ...(row.sums ?? {}), [field]: typed.sum } };
+  };
+  // Pointing at a size box or cell whose number came from a sum: how it was worked out (components/sum-hover-tip.ts).
+  useSumHoverTip((el) => {
+    const key = sumCellKeyOf(el);
+    if (!key) return null;
+    const [rowId, field] = key.split("::");
+    if (!rowId || !(SUM_FIELDS as readonly string[]).includes(field)) return null;
+    const row =
+      (cutlistPieceEdit?.draft.id === rowId ? cutlistPieceEdit.draft : undefined) ??
+      cutlistDraftRows.find((r) => r.id === rowId) ??
+      initialCutlistDraftRows.find((r) => r.id === rowId) ??
+      cutlistRows.find((r) => r.id === rowId) ??
+      initialCutlistRows.find((r) => r.id === rowId);
+    const sum = row ? sumShownFor(row.sums, field, row[field as SumField]) : undefined;
+    return sum ? { label: cutlistFieldLabel(field as CutlistEditableField), sum } : null;
+  });
   useEffect(() => {
     const workOut = (target: EventTarget | null) => {
       if (!(target instanceof HTMLInputElement)) return;
       if (target.inputMode !== "decimal" && target.inputMode !== "numeric") return;
+      const sum = target.value.replace(/\s/g, "");
       const answer = evaluateDimensionMath(target.value);
       if (answer == null || answer === target.value) return;
       const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
@@ -13785,6 +13901,8 @@ export default function ProjectDetailsPage() {
         setValue.call(target, answer);
         target.dispatchEvent(new Event("input", { bubbles: true }));
       });
+      const at = sumTargetOf(target);
+      if (at) recordTypedSum(at.rowId, at.field, sum, answer);
     };
     const onFocusOut = (event: FocusEvent) => workOut(event.target);
     const onKeyDown = (event: KeyboardEvent) => {
@@ -15029,6 +15147,36 @@ export default function ProjectDetailsPage() {
   useEffect(() => {
     cutlistActivityFeedRef.current = cutlistActivityFeed;
   }, [cutlistActivityFeed]);
+
+  // The Cutlist List's tables' heading rows (data-list-sticky-head): marked data-stuck while they're held under the top
+  // bar or the feed's band — their table scrolled up past that line, so they're held there (or carried up with its end,
+  // still glass, into its rounded bottom corners).
+  useEffect(() => {
+    const scroller = productionCutlistScrollEl;
+    if (!scroller) return;
+    let frame = 0;
+    const mark = () => {
+      frame = 0;
+      for (const head of Array.from(scroller.querySelectorAll<HTMLElement>("thead[data-list-sticky-head]"))) {
+        const top = Number.parseFloat(head.style.top) || 0;
+        const rect = head.getBoundingClientRect();
+        const table = head.parentElement?.getBoundingClientRect();
+        const stuck = Boolean(table) && rect.height > 0 && table!.top < top - 0.5;
+        if ((head.dataset.stuck === "true") !== stuck) head.dataset.stuck = stuck ? "true" : "false";
+      }
+    };
+    const onScroll = () => {
+      if (!frame) frame = window.requestAnimationFrame(mark);
+    };
+    mark();
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      scroller.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [productionCutlistScrollEl]);
 
   const salesRooms = useMemo(() => {
     const base = salesRoomNames.length ? salesRoomNames : [];
@@ -16793,6 +16941,13 @@ export default function ProjectDetailsPage() {
     return { ...row, clashLeft: nextLeft, clashRight: nextRight, clashing: joinClashing(nextLeft, nextRight) };
   };
 
+  // ...just the lacquered side of that: a row on a lacquered board without its part type's autoclash (clashing that isn't
+  // that kept); any other row as it is — for rows made from others (a bank's fronts, parts brought over from Initial
+  // Measure), whose clashing was worked out for another board.
+  const withoutLacquerAutoClash = <T extends { board?: string; partType?: string; clashing?: string; clashLeft?: string; clashRight?: string }>(
+    row: T,
+  ): T => (boardLacquerFor(String(row.board ?? "").trim()) ? withBoardLacquerClashing(row) : row);
+
   const defaultClashingForPartType = (partType: string, boardLabel: string) => {
     const board = String(boardLabel || "").trim();
     if (board && boardLacquerFor(board)) {
@@ -16909,6 +17064,8 @@ export default function ProjectDetailsPage() {
       ...adjustableShelfClash,
     });
 
+    // (On a lacquered board: no clashing on any of them — they're painted, not edged.)
+    if (boardLacquerFor(String(row.board || "").trim())) return parts.map((part) => ({ ...part, clashLeft: "", clashRight: "" }));
     return parts;
   };
 
@@ -19892,6 +20049,7 @@ export default function ProjectDetailsPage() {
       // (A Custom piece's shape — kept as it is, or brought back from this device's copy of the Cutlist Entry.)
       shape: normalizeCutlistShape(seed?.shape),
       edges: normalizeRowEdges(seed?.edges),
+      sums: normalizeRowSums(seed?.sums),
       quantity: String(seed?.quantity ?? ""),
       clashing: joinClashing(left, right),
       clashLeft: left,
@@ -22122,6 +22280,7 @@ export default function ProjectDetailsPage() {
             drawerWeights: normalizeDrawerWeights(item.DrawerWeights ?? item.drawerWeights),
             shape: normalizeCutlistShape(item.Shape ?? item.shape),
             edges: normalizeRowEdges(item.Edges ?? item.edges),
+            sums: normalizeRowSums(item.Sums ?? item.sums),
               information: String(item.Information ?? item.information ?? item.info ?? ""),
               grain: grainParsed.grain,
               grainValue: grainParsed.grainValue,
@@ -25873,8 +26032,10 @@ export default function ProjectDetailsPage() {
 
   const registerCutlistWarnCellRef = (rowKey: string, field: string) => (el: HTMLElement | null) => {
     const key = `${rowKey}::${field}`;
-    if (el) cutlistWarnCellElRefs.current[key] = el;
-    else delete cutlistWarnCellElRefs.current[key];
+    if (el) {
+      cutlistWarnCellElRefs.current[key] = el;
+      cutlistCellKeyOfEl.current.set(el, key);
+    } else delete cutlistWarnCellElRefs.current[key];
   };
   const CUTLIST_FIELD_BUBBLE_DURATION_MS = 10000;
   const CUTLIST_FIELD_BUBBLE_EXIT_MS = 200;
@@ -26307,6 +26468,26 @@ export default function ProjectDetailsPage() {
     persistCutlistRowsChainRef.current = next;
     return next;
   };
+  // A save's changed rows (as they were before it) into their History (lib/cutlist-history.ts) — Production's or Initial
+  // Measure's.
+  const stampCutlistRowHistory = (kind: "production" | "initialMeasure", beforeRows: CutlistRow[], afterRows: CutlistRow[]) => {
+    if (!project) return;
+    const afterById = new Map(afterRows.map((row) => [row.id, row]));
+    const changedBefore = beforeRows.filter((before) => {
+      const after = afterById.get(before.id);
+      return Boolean(after) && serializeCutlistRowsSnapshot([before]) !== serializeCutlistRowsSnapshot([after!]);
+    });
+    if (!changedBefore.length) return;
+    const scope = kind === "initialMeasure" ? "initial" : "production";
+    for (const row of changedBefore) cutlistHistoryReadRef.current.delete(`${scope}:${row.id}`);
+    setCutlistHistoryKnown((prev) => ({ ...prev, ...Object.fromEntries(changedBefore.map((row) => [`${scope}:${row.id}`, true])) }));
+    void addCutlistRowHistory(
+      project,
+      kind,
+      changedBefore.map((row) => ({ rowId: row.id, row: cutlistRowForHistory(row) })),
+      String(user?.displayName || "").trim() || "Staff",
+    );
+  };
   const persistCutlistContainerNow = async (nextRows: CutlistRow[], kept = false) => {
     if (!project) return false;
     const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType);
@@ -26317,12 +26498,15 @@ export default function ProjectDetailsPage() {
     const baseRows = synced?.projectId === project.id ? serializeCutlistRowsForStorage(synced.rows, isCabinetryPartType) : null;
     const known = productionCutlistState.latest();
     const prevRawRows = baseRows ?? known.rawRows;
+    // (The rows as this person last had them — each one this save changes goes into its History as it was.)
+    const historyBefore = synced?.projectId === project.id ? synced.rows : null;
     isPersistingCutlistRowsRef.current = true;
     try {
       const saved = await saveCutlistDataMerged(project, "production", { base: baseRows, rows }, known.rawRows, known.rev, kept);
       const ok = saved.ok;
       if (ok) {
         productionSyncedRowsRef.current = { projectId: project.id, rows: nextRows };
+        if (historyBefore) stampCutlistRowHistory("production", historyBefore, nextRows);
         productionCutlistState.setRawRowsOptimistic(saved.rows, saved.rev);
         // Diffs against the LAST PERSISTED rows (prevRawRows), not any local React state. Capped
         // to the core identity/dimension fields (not every one of a CutlistRow's ~50 fields).
@@ -26420,6 +26604,8 @@ export default function ProjectDetailsPage() {
         if (saved.ok) {
           initialSyncedRowsRef.current = { projectId: project.id, rows: nextRows };
           initialCutlistState.setRawRowsOptimistic(saved.rows, saved.rev);
+          // (Each row this save changed: as it was, into its History.)
+          if (synced?.projectId === project.id) stampCutlistRowHistory("initialMeasure", synced.rows, nextRows);
         } else {
           setLockMessage("Could not save Initial Measure changes.");
         }
@@ -29535,7 +29721,7 @@ export default function ProjectDetailsPage() {
           // (Its Clashing whole kept with its two parts — set from its drawing or its dropdowns — so the drawing, and anything
           // reading it whole, agree: all its edges unclashed is no clashing at all.)
           if ("clashLeft" in patch || "clashRight" in patch) next.clashing = joinClashing(String(next.clashLeft ?? ""), String(next.clashRight ?? ""));
-          if ("height" in patch || "width" in patch) Object.assign(next, edgesPatchForSizeChange(row, next));
+          if ("height" in patch || "width" in patch || "depth" in patch) Object.assign(next, edgesPatchForSizeChange(row, next));
           if (isDoorPartType(next.partType)) {
             const nextMode = normalizeDoorModeValue(next.doorMode);
             const nextCount = normalizeDoorFrontCountValue(next.doorFrontCount);
@@ -29855,7 +30041,9 @@ export default function ProjectDetailsPage() {
       candidate.grainValue, candidate.room,
     ]);
     const merged: CutlistRow[] = [];
-    for (const splitRow of splitRows) {
+    // (A front on a board of its own: on a lacquered one, without the bank's autoclash — worked out for the bank's board.)
+    const frontsClashed = splitRows.map((front) => (String(front.board ?? "") !== String(row.board ?? "") ? withoutLacquerAutoClash(front) : front));
+    for (const splitRow of frontsClashed) {
       const signature = dedupeSignature(splitRow);
       const existing = merged.find((candidate) => dedupeSignature(candidate) === signature);
       if (existing) {
@@ -30042,11 +30230,11 @@ export default function ProjectDetailsPage() {
   // it is, they stay on the sides they were clicked on — long or short as the piece now is — and its Clashing follows
   // (lib/edge-tapes.ts' edgesForSizeChange). Nothing when that doesn't apply.
   const edgesPatchForSizeChange = (
-    previous: Pick<CutlistRow, "height" | "width" | "edges" | "clashLeft" | "clashRight" | "clashing">,
-    next: Pick<CutlistRow, "height" | "width">,
+    previous: Pick<CutlistRow, "height" | "width" | "depth" | "edges" | "clashLeft" | "clashRight" | "clashing">,
+    next: Pick<CutlistRow, "height" | "width" | "depth">,
   ): Partial<CutlistRow> => {
     if (!normalizeRowEdges(previous.edges)) return {};
-    const edges = edgesForSizeChange(resolveRowEdges(previous), previous, next);
+    const edges = edgesForSizeChange(resolveRowEdges(previous), pieceDrawnSize(previous), pieceDrawnSize(next));
     if (!edges) return {};
     const { clashLeft, clashRight } = clashingFromEdges(edges);
     return { edges, clashLeft, clashRight, clashing: joinClashing(clashLeft, clashRight) };
@@ -30069,13 +30257,21 @@ export default function ProjectDetailsPage() {
   // row, Edit piece); none — just to look at.
   const renderPieceEdges = (row: CutlistRow, opts: { onChange?: (edges: RowEdges) => void; size?: number }) => {
     if (!canDrawPieceEdges(row)) return null;
+    // (Its two sizes it has — Height or Depth up, Width or Depth across — as its part label draws it.)
+    const drawn = pieceDrawnSize(row);
     return (
       <PieceEdgesZoom
-        height={String(row.height ?? "")}
-        width={String(row.width ?? "")}
+        height={drawn.height}
+        width={drawn.width}
         edges={resolveRowEdges(row)}
         tapes={pieceEdgeTapeOptions}
         color={partTypeColors[String(row.partType || "Unassigned")]}
+        // (A door: its hinges drawn where they go.)
+        hinges={
+          isDoorPartType(String(row.partType || "")) && !row.bankGroupId
+            ? { up: normalizeDoorHingeValues(row.hingesUp), down: normalizeDoorHingeValues(row.hingesDown), side: normalizeHingeSideValue(row.hingeSide) }
+            : undefined
+        }
         title={String(row.name || "").trim() || String(row.partType || "")}
         editable={Boolean(opts.onChange)}
         onChange={opts.onChange}
@@ -31183,7 +31379,7 @@ export default function ProjectDetailsPage() {
         // (Its Clashing whole kept with its two parts — set from its drawing or its dropdowns — so the drawing, and anything
         // reading it whole, agree: all its edges unclashed is no clashing at all.)
         if ("clashLeft" in patch || "clashRight" in patch) next.clashing = joinClashing(String(next.clashLeft ?? ""), String(next.clashRight ?? ""));
-        if ("height" in patch || "width" in patch) Object.assign(next, edgesPatchForSizeChange(row, next));
+        if ("height" in patch || "width" in patch || "depth" in patch) Object.assign(next, edgesPatchForSizeChange(row, next));
         if (isClassicDrawerRowLike(next)) {
           const tokens = parseDrawerHeightTokens(String(next.height ?? ""));
           next.height = formatDrawerHeightTokens(tokens);
@@ -32482,6 +32678,7 @@ export default function ProjectDetailsPage() {
       grain: Boolean(String(source.grainValue ?? "").trim()),
       information: String(source.information ?? ""),
       includeInNesting: source.includeInNesting !== false,
+      ...(normalizeRowSums(source.sums) ? { sums: normalizeRowSums(source.sums) } : {}),
     };
   };
 
@@ -36000,19 +36197,22 @@ export default function ProjectDetailsPage() {
   // (`extra`: a row with its top drawer's box opened out — renderDrawerDepthBoxes: its Depth column wider by it (up to
   // DRAWER_BOX_OPEN_EXTRA, as it slides), the columns either side of it each giving up half — so it squeezes them, rather
   // than covering them, and its depth stays where it was, dead centre.)
+  // (Board, Part Name, the Clashing dropdowns and Information give up room on a narrower screen — down to a usable least —
+  // so the row always fits beside the Rooms column, its Grain switch at the end never pushed off the right of the screen
+  // (a 1440-wide laptop's was). The sizes and Grain keep theirs. Full width wherever there's room.)
   const cutlistEntryGridTemplateFor = useCallback(
     (extra: number) => {
       const cols: Array<{ key: string; width: string }> = [{ key: "", width: "28px" }];
       cutlistEntryColumnDefs.forEach((col) => {
         if (col.key === "board" || col.key === "name") {
-          cols.push({ key: col.key, width: "230px" });
+          cols.push({ key: col.key, width: "minmax(120px,230px)" });
         } else if (col.key === "height" || col.key === "width" || col.key === "depth" || col.key === "quantity") {
           cols.push({ key: col.key, width: "70px" });
         } else if (col.key === "clashing") {
           // (The piece's drawing — its clashed edges — then the two dropdowns, the same width as each other.)
-          cols.push({ key: col.key, width: "30px" }, { key: col.key, width: "84px" }, { key: col.key, width: "84px" });
+          cols.push({ key: col.key, width: "30px" }, { key: col.key, width: "minmax(66px,84px)" }, { key: col.key, width: "minmax(66px,84px)" });
         } else if (col.key === "information") {
-          cols.push({ key: col.key, width: "minmax(186px,1fr)" });
+          cols.push({ key: col.key, width: "minmax(150px,1fr)" });
         } else if (col.key === "grain") {
           cols.push({ key: col.key, width: "96px" });
         }
@@ -36080,15 +36280,16 @@ export default function ProjectDetailsPage() {
     ];
     const grainColumnWidth = Math.max(2, ...grainSegmentCounts) * 32;
     initialCutlistEntryColumnDefs.forEach((col) => {
+      // (As the Production entry's: these give up room on a narrower screen, so its Grain switch always fits.)
       if (col.key === "board" || col.key === "name") {
-        cols.push("230px");
+        cols.push("minmax(120px,230px)");
       } else if (col.key === "height" || col.key === "width" || col.key === "depth" || col.key === "quantity") {
         cols.push("70px");
       } else if (col.key === "clashing") {
         // (The piece's drawing — its clashed edges — then the two dropdowns, the same width as each other.)
-        cols.push("30px", "84px", "84px");
+        cols.push("30px", "minmax(66px,84px)", "minmax(66px,84px)");
       } else if (col.key === "information") {
-        cols.push("minmax(186px,1fr)");
+        cols.push("minmax(150px,1fr)");
       } else if (col.key === "grain") {
         cols.push(`${grainColumnWidth}px`);
       }
@@ -36527,7 +36728,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           updated[target.key] = value;
           break;
       }
-      if (target.key === "height" || target.key === "width") Object.assign(updated, edgesPatchForSizeChange(row, updated));
+      if (target.key === "height" || target.key === "width" || target.key === "depth") Object.assign(updated, edgesPatchForSizeChange(row, updated));
+      Object.assign(updated, typedSumPatch(updated, target.key));
       if (target.key === "board" || target.key === "height" || target.key === "width" || target.key === "depth") {
         return autoSelectGrainValueForRow(updated);
       }
@@ -36917,6 +37119,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
     setCutlistPieceEdit({ rowId: row.id, draft: { ...row }, issues: {}, saving: false });
   };
+  // ...an Initial Measure list row's (its right-click menu): the same pop-up, with Initial Measure's boards, part types and
+  // grain, saved back to Initial Measure.
+  const openInitialCutlistPieceEdit = (rowId: string) => {
+    const row = initialCutlistRows.find((r) => r.id === rowId);
+    if (!row) return;
+    if (isCompactProjectViewport) {
+      openCutlistListEdit("initial", row.id);
+      return;
+    }
+    setCutlistPieceEdit({ rowId: row.id, draft: { ...row }, issues: {}, saving: false, scope: "initial" });
+  };
   const patchCutlistPieceEdit = (patch: Partial<CutlistRow> | ((draft: CutlistRow) => Partial<CutlistRow>)) =>
     setCutlistPieceEdit((prev) => {
       if (!prev || prev.saving) return prev;
@@ -36924,7 +37137,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       const draft = { ...prev.draft, ...change };
       // (Its Clashing whole kept with its two parts, as an Entry row's is — updateDraftCutlistRow.)
       if ("clashLeft" in change || "clashRight" in change) draft.clashing = joinClashing(String(draft.clashLeft ?? ""), String(draft.clashRight ?? ""));
-      if ("height" in change || "width" in change) Object.assign(draft, edgesPatchForSizeChange(prev.draft, draft));
+      if ("height" in change || "width" in change || "depth" in change) Object.assign(draft, edgesPatchForSizeChange(prev.draft, draft));
       return { ...prev, draft, issues: {} };
     });
   // What changing one thing changes with it, as each field's own change in the list does (commitCellEdit): a new part type
@@ -36989,8 +37202,66 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     if (sizeChanged && String(updated.grainValue ?? "") === String(previous.grainValue ?? "")) updated = autoSelectGrainValueForRow(updated);
     return updated;
   };
+  // Edit piece's Save for an Initial Measure row: what changing one thing changes with it there (a new board without a grain
+  // its grain, a new part type its shape, a drawer's heights its count), checked as its cells are (its sheet size only
+  // noted, as there), then saved to Initial Measure.
+  const saveInitialCutlistPieceEdit = async () => {
+    const edit = cutlistPieceEdit;
+    if (!edit || edit.saving || salesReadOnly) return;
+    const previous = initialCutlistRows.find((r) => r.id === edit.rowId);
+    if (!previous) {
+      setCutlistPieceEdit(null);
+      return;
+    }
+    const updated: CutlistRow = { ...edit.draft };
+    const partType = String(updated.partType || "");
+    if (partType !== String(previous.partType || "") && updated.shape && !isCustomPartType(partType)) updated.shape = undefined;
+    if (String(updated.board ?? "") !== String(previous.board ?? "") && !initialMeasureBoardGrainFor(String(updated.board ?? "").trim())) {
+      updated.grainValue = "";
+      updated.grain = false;
+    }
+    if (!isCabinetryPartType(partType)) {
+      const split = splitClashing(joinClashing(String(updated.clashLeft ?? ""), String(updated.clashRight ?? "")).trim().toUpperCase());
+      updated.clashLeft = split.left;
+      updated.clashRight = split.right;
+      updated.clashing = joinClashing(split.left, split.right);
+    }
+    if (isClassicDrawerRowLike(updated)) {
+      const tokens = parseDrawerHeightTokens(String(updated.height ?? ""));
+      updated.height = formatDrawerHeightTokens(tokens);
+      updated.quantity = String(Math.max(1, tokens.length));
+    }
+    if (isDoorPartType(partType)) {
+      updated.hingesUp = normalizeDoorHingeValues(updated.hingesUp);
+      updated.hingesDown = normalizeDoorHingeValues(updated.hingesDown);
+    }
+    if (JSON.stringify(updated) === JSON.stringify(previous)) {
+      setCutlistPieceEdit(null);
+      return;
+    }
+    const issues = validateCutlistRowInput(updated, partType.trim(), cutlistRowLabelFor(updated, "Entry"), {
+      boardSheetText: initialMeasureChosenSheetTextForRow(updated),
+      boardMaxEdge: initialMeasureBoardMaxEdgeFor(String(updated.board || "").trim()),
+    }).filter((issue) => !isSheetSizeIssue(issue));
+    if (issues.length) {
+      const byField: Record<string, string> = {};
+      for (const issue of issues) {
+        const key = String(issue.field).startsWith("hinges_") ? "hinges" : String(issue.field);
+        if (!byField[key]) byField[key] = issue.message;
+      }
+      setCutlistPieceEdit({ ...edit, draft: updated, issues: byField });
+      return;
+    }
+    const next = initialCutlistRows.map((r) => (r.id === updated.id ? updated : r));
+    logCutlistListEditChanges(previous, updated, "initial");
+    setCutlistPieceEdit({ ...edit, draft: updated, saving: true });
+    setInitialCutlistRows(next);
+    await persistInitialCutlistRows(next);
+    setCutlistPieceEdit(null);
+  };
   const saveCutlistPieceEdit = async () => {
     const edit = cutlistPieceEdit;
+    if (edit?.scope === "initial") return saveInitialCutlistPieceEdit();
     if (!edit || edit.saving || productionReadOnly) return;
     const previous = cutlistRows.find((r) => r.id === edit.rowId);
     if (!previous) {
@@ -37106,15 +37377,287 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           document.body,
         )
       : null;
-  const pieceMenuItemClass =
-    "flex w-full items-center gap-2.5 rounded-[8px] px-2.5 py-2 text-left text-[13px] font-medium transition hover:bg-[color-mix(in_srgb,var(--brand)_12%,transparent)] disabled:pointer-events-none disabled:opacity-45";
+  // Move › its rooms (every right-click menu's): a piece's row — a cabinet's, drawer's or door's piece: that row; a bank's
+  // front: its whole bank, so its fronts stay together — put in another room, as changing its Room in the list does.
+  const moveCutlistRowToRoom = async (rowId: string, room: string) => {
+    if (productionReadOnly) return;
+    const row = cutlistRows.find((r) => r.id === rowId);
+    const nextRoom = String(room || "").trim();
+    if (!row || !nextRoom) return;
+    const moving = (r: CutlistRow) => r.id === row.id || Boolean(row.bankGroupId && r.bankGroupId === row.bankGroupId);
+    if (!cutlistRows.some((r) => moving(r) && String(r.room || "").trim() !== nextRoom)) return;
+    const next = cutlistRows.map((r) => (moving(r) ? { ...r, room: nextRoom } : r));
+    const fromRoom = String(row.room || "").trim();
+    logCutlistActivity(`${String(row.name || "").trim() || "Unnamed Row"} | Room:`, {
+      partType: row.partType,
+      valueFrom: fromRoom,
+      valueTo: nextRoom,
+      dedupeKey: `change:${row.id}:room:${fromRoom}->${nextRoom}`,
+    });
+    setCutlistRows(next);
+    await persistCutlistRows(next);
+  };
+  // The menus' Move: its rooms (the Cutlist Entry's Room choices) beside it, the one it's in ticked.
+  const pieceMoveMenuItem = (pieceRowId: string): PieceMenuItem => {
+    const row = cutlistRows.find((r) => r.id === cutlistRowIdForPiece(pieceRowId));
+    const current = String(row?.room || "").trim();
+    return {
+      key: "move",
+      icon: <FolderInput size={14} />,
+      label: "Move",
+      disabled: productionReadOnly || !row,
+      submenu: {
+        title: "Move to room",
+        empty: "No rooms yet",
+        choices: cutlistEntryRoomOptions.map((room) => ({
+          key: room,
+          label: room,
+          checked: room === current,
+          run: () => {
+            if (row && room !== current) void moveCutlistRowToRoom(row.id, room);
+          },
+        })),
+      },
+    };
+  };
+  const copyPieceSize = (size: string) => void navigator.clipboard?.writeText(size).catch(() => undefined);
+  // A row's sizes as typed (Height × Width × Depth, the ones it has) — for Copy size.
+  const cutlistRowSizeText = (row: CutlistRow) => [row.height, row.width, row.depth].map((v) => String(v ?? "").trim()).filter(Boolean).join(" × ");
+  // A right-click on a row: where its menu opens — or nothing (the browser's own menu) when something in it already took
+  // the right-click (a piece's drawing, its edge tape list), or words are picked in it to copy.
+  const rowMenuPoint = (e: React.MouseEvent<HTMLElement>): { x: number; y: number } | null => {
+    if (e.defaultPrevented || isCompactProjectViewport) return null;
+    const field = (e.target as HTMLElement | null)?.closest?.("input, textarea") as HTMLInputElement | HTMLTextAreaElement | null;
+    try {
+      if (field && field.selectionStart !== null && field.selectionStart !== field.selectionEnd) return null;
+    } catch {
+      // (A box with no text selection of its own.)
+    }
+    const picked = window.getSelection();
+    if (picked && !picked.isCollapsed && picked.anchorNode && e.currentTarget.contains(picked.anchorNode)) return null;
+    e.preventDefault();
+    return { x: e.clientX, y: e.clientY };
+  };
+  // The Cutlist List's tables: a right-click anywhere on a part (its own row, or its pieces, hinges or second row under it)
+  // opens that part's menu.
+  const openCutlistRowMenuFromTable = (e: React.MouseEvent<HTMLElement>) => {
+    let tr = (e.target as HTMLElement | null)?.closest?.("tr") as HTMLTableRowElement | null;
+    while (tr && !tr.dataset.cutlistRowId) tr = tr.previousElementSibling as HTMLTableRowElement | null;
+    const rowId = tr?.dataset.cutlistRowId;
+    if (!rowId) return;
+    const at = rowMenuPoint(e);
+    if (!at) return;
+    setCutlistRowMenu({ ...at, rowId });
+    void checkCutlistRowHistory(rowId, "production");
+  };
+  const openEntryRowMenu = (e: React.MouseEvent<HTMLElement>, draftId: string) => {
+    const at = rowMenuPoint(e);
+    if (at) setEntryRowMenu({ ...at, draftId });
+  };
+  // The Cutlist Entry's Clear row: back to an empty row of its part type, in its room (Undo puts it back as it was).
+  const clearDraftCutlistRow = (draftId: string) => {
+    if (productionReadOnly) return;
+    const row = cutlistDraftRows.find((r) => r.id === draftId);
+    if (!row) return;
+    const fresh = createDraftCutlistRow(String(row.partType || ""), String(row.room || ""));
+    const cleared: CutlistDraftRow = { ...fresh, id: row.id, ...(row.parentRowId ? { parentRowId: row.parentRowId } : {}) };
+    setCutlistDraftRows((prev) => prev.map((r) => (r.id === draftId ? cleared : r)));
+    dismissAllWarningsForRow(draftId);
+    offerUndo(`${String(row.name || "").trim() || "Row"} cleared`, () => setCutlistDraftRows((prev) => prev.map((r) => (r.id === draftId ? row : r))));
+  };
+  // ...and its Move: the row (with its sub parts) to another room's Cutlist Entry (Undo brings it back).
+  const moveDraftCutlistRowToRoom = (draftId: string, room: string) => {
+    if (productionReadOnly) return;
+    const index = cutlistDraftRows.findIndex((r) => r.id === draftId);
+    if (index < 0) return;
+    const ids = [draftId];
+    for (let at = index + 1; at < cutlistDraftRows.length && subPartDraftRowIds.has(cutlistDraftRows[at].id); at += 1) ids.push(cutlistDraftRows[at].id);
+    const before = new Map(cutlistDraftRows.filter((r) => ids.includes(r.id)).map((r) => [r.id, String(r.room || "")]));
+    setCutlistDraftRows((prev) => prev.map((r) => (ids.includes(r.id) ? { ...r, room } : r)));
+    const name = String(cutlistDraftRows[index].name || "").trim() || "Row";
+    offerUndo(`${name} moved to ${room}`, () => setCutlistDraftRows((prev) => prev.map((r) => (before.has(r.id) ? { ...r, room: before.get(r.id) ?? r.room } : r))));
+  };
+  // ---- Initial Measure's right-click menus (a computer's), as Production's: its List's and its Entry's.
+  const openInitialRowMenuFromTable = (e: React.MouseEvent<HTMLElement>) => {
+    let tr = (e.target as HTMLElement | null)?.closest?.("tr") as HTMLTableRowElement | null;
+    while (tr && !tr.dataset.cutlistRowId) tr = tr.previousElementSibling as HTMLTableRowElement | null;
+    const rowId = tr?.dataset.cutlistRowId;
+    if (!rowId) return;
+    const at = rowMenuPoint(e);
+    if (!at) return;
+    setInitialRowMenu({ ...at, rowId });
+    void checkCutlistRowHistory(rowId, "initial");
+  };
+  const openInitialEntryRowMenu = (e: React.MouseEvent<HTMLElement>, draftId: string) => {
+    const at = rowMenuPoint(e);
+    if (at) setInitialEntryRowMenu({ ...at, draftId });
+  };
+  // Move: an Initial Measure part (a bank's front: its whole bank) put in another room.
+  const moveInitialCutlistRowToRoom = async (rowId: string, room: string) => {
+    if (salesReadOnly) return;
+    const row = initialCutlistRows.find((r) => r.id === rowId);
+    const nextRoom = String(room || "").trim();
+    if (!row || !nextRoom) return;
+    const moving = (r: CutlistRow) => r.id === row.id || Boolean(row.bankGroupId && r.bankGroupId === row.bankGroupId);
+    if (!initialCutlistRows.some((r) => moving(r) && String(r.room || "").trim() !== nextRoom)) return;
+    const next = initialCutlistRows.map((r) => (moving(r) ? { ...r, room: nextRoom } : r));
+    const fromRoom = String(row.room || "").trim();
+    logCutlistActivity(`${String(row.name || "").trim() || "Unnamed Row"} | Room:`, {
+      partType: row.partType,
+      valueFrom: fromRoom,
+      valueTo: nextRoom,
+      dedupeKey: `initial:change:${row.id}:room:${fromRoom}->${nextRoom}`,
+      scope: "initial",
+    });
+    setInitialCutlistRows(next);
+    await persistInitialCutlistRows(next);
+  };
+  // Delete: the part gone from Initial Measure's list (Undo brings it back).
+  const removeInitialCutlistRowNow = async (rowId: string) => {
+    if (salesReadOnly) return;
+    const removed = initialCutlistRows.find((r) => r.id === rowId);
+    if (!removed) return;
+    const taken = takenOutOf(initialCutlistRows, (r) => r.id === rowId);
+    const next = initialCutlistRows.filter((r) => r.id !== rowId);
+    setInitialCutlistRows(next);
+    logCutlistActivity(`${removed.name || "Part"} removed`, { partType: removed.partType, scope: "initial" });
+    offerCutlistRowsUndo("initialMeasure", taken);
+    await persistInitialCutlistRows(next);
+  };
+  // Change grain direction: the grain turned the other way, as its Grain switch does (only if it still fits its sheet —
+  // otherwise its cell says why, as the switch's does). Only on a product with a grain.
+  const initialPieceGrainFlip = (rowId: string): { row: CutlistRow; value: string } | null => {
+    const row = initialCutlistRows.find((r) => r.id === rowId);
+    if (!row || !initialMeasureBoardGrainFor(String(row.board ?? "").trim())) return null;
+    const choices = initialMeasureGrainDimensionChoicesForRow(row);
+    const current = choices.find((c) => c.value === String(row.grainValue ?? "").trim());
+    const other = choices.find((c) => c.field !== "D" && c.field !== current?.field) ?? choices.find((c) => c.value !== current?.value);
+    return other ? { row, value: other.value } : null;
+  };
+  // The List's menu: Edit piece, Move, Duplicate, History, Change grain direction, Copy size and Delete.
+  const renderInitialRowMenu = () => {
+    const menu = initialRowMenu;
+    if (!menu) return null;
+    const row = initialCutlistRows.find((r) => r.id === menu.rowId);
+    if (!row) return null;
+    const size = cutlistRowSizeText(row);
+    const currentRoom = String(row.room || "").trim();
+    const flip = initialPieceGrainFlip(row.id);
+    const items: PieceMenuItem[] = [
+      { key: "edit", icon: <Pencil size={14} />, label: "Edit piece", run: () => openInitialCutlistPieceEdit(row.id) },
+      {
+        key: "move",
+        icon: <FolderInput size={14} />,
+        label: "Move",
+        disabled: salesReadOnly,
+        submenu: {
+          title: "Move to room",
+          empty: "No rooms yet",
+          choices: initialCutlistEntryRoomOptions.map((room) => ({
+            key: room,
+            label: room,
+            checked: room === currentRoom,
+            run: () => {
+              if (room !== currentRoom) void moveInitialCutlistRowToRoom(row.id, room);
+            },
+          })),
+        },
+      },
+      { key: "duplicate", icon: <CopyPlus size={14} />, label: "Duplicate", disabled: salesReadOnly, run: () => void duplicateCutlistListRow("initial", row.id) },
+      { key: "history", icon: <HistoryIcon size={14} />, label: "History", disabled: !cutlistHistoryKnown[`initial:${row.id}`], run: () => openCutlistRowHistory(row.id, "initial") },
+      {
+        key: "grain",
+        icon: <RotateCcw size={14} />,
+        label: "Change grain direction",
+        disabled: salesReadOnly || !flip,
+        run: () => {
+          if (flip) void applyInitialRowGrainValue(flip.row, flip.value);
+        },
+      },
+      { key: "copy", icon: <Copy size={14} />, label: size ? `Copy size (${size})` : "Copy size", disabled: !size, run: () => copyPieceSize(size) },
+      "divider",
+      { key: "delete", icon: <Trash2 size={14} />, label: "Delete", danger: true, disabled: salesReadOnly, run: () => void removeInitialCutlistRowNow(row.id) },
+    ];
+    return (
+      <PieceContextMenu
+        x={menu.x}
+        y={menu.y}
+        title={String(row.name || "").trim() || "Part"}
+        subtitle={[row.partType, row.room].map((v) => String(v || "").trim()).filter(Boolean).join(" · ")}
+        items={items}
+        onClose={() => setInitialRowMenu(null)}
+      />
+    );
+  };
+  // The Entry's menu: Duplicate, Move, Copy size, Clear row and Delete row (Move, Clear and Delete with Undo).
+  const renderInitialEntryRowMenu = () => {
+    const menu = initialEntryRowMenu;
+    if (!menu) return null;
+    const draft = initialCutlistDraftRows.find((r) => r.id === menu.draftId);
+    if (!draft) return null;
+    const size = cutlistRowSizeText(draft);
+    const currentRoom = String(draft.room || "").trim();
+    const items: PieceMenuItem[] = [
+      { key: "duplicate", icon: <CopyPlus size={14} />, label: "Duplicate", disabled: salesReadOnly, run: () => duplicateInitialDraftCutlistRow(draft.id) },
+      {
+        key: "move",
+        icon: <FolderInput size={14} />,
+        label: "Move",
+        disabled: salesReadOnly,
+        submenu: {
+          title: "Move to room",
+          empty: "No rooms yet",
+          choices: initialCutlistEntryRoomOptions.map((room) => ({
+            key: room,
+            label: room,
+            checked: room === currentRoom,
+            run: () => {
+              if (room === currentRoom) return;
+              const before = String(draft.room || "");
+              setInitialCutlistDraftRows((prev) => prev.map((r) => (r.id === draft.id ? { ...r, room } : r)));
+              offerUndo(`${String(draft.name || "").trim() || "Row"} moved to ${room}`, () =>
+                setInitialCutlistDraftRows((prev) => prev.map((r) => (r.id === draft.id ? { ...r, room: before } : r))),
+              );
+            },
+          })),
+        },
+      },
+      { key: "copy", icon: <Copy size={14} />, label: size ? `Copy size (${size})` : "Copy size", disabled: !size, run: () => copyPieceSize(size) },
+      {
+        key: "clear",
+        icon: <Eraser size={14} />,
+        label: "Clear row",
+        disabled: salesReadOnly,
+        run: () => {
+          const fresh = createDraftCutlistRow(String(draft.partType || ""), String(draft.room || ""));
+          setInitialCutlistDraftRows((prev) => prev.map((r) => (r.id === draft.id ? { ...fresh, id: draft.id } : r)));
+          dismissAllWarningsForRow(draft.id);
+          offerUndo(`${String(draft.name || "").trim() || "Row"} cleared`, () =>
+            setInitialCutlistDraftRows((prev) => prev.map((r) => (r.id === draft.id ? draft : r))),
+          );
+        },
+      },
+      "divider",
+      { key: "delete", icon: <Trash2 size={14} />, label: "Delete row", danger: true, disabled: salesReadOnly, run: () => removeInitialDraftCutlistRow(draft.id) },
+    ];
+    return (
+      <PieceContextMenu
+        x={menu.x}
+        y={menu.y}
+        title={String(draft.name || "").trim() || `New ${String(draft.partType || "row").trim()}`}
+        subtitle={[draft.partType, draft.room].map((v) => String(v || "").trim()).filter(Boolean).join(" · ")}
+        items={items}
+        onClose={() => setInitialEntryRowMenu(null)}
+      />
+    );
+  };
   // The CNC Cutlist's right-click menu (a computer's), as Nesting's piece menu.
   const renderCncPieceMenu = () => {
     const menu = cncPieceMenu;
-    if (!menu || typeof document === "undefined") return null;
-    const close = () => setCncPieceMenu(null);
-    const items: Array<{ key: string; icon: ReactNode; label: string; disabled?: boolean; run: () => void }> = [
+    if (!menu) return null;
+    const items: PieceMenuItem[] = [
       { key: "edit", icon: <Pencil size={14} />, label: "Edit piece", run: () => openCutlistPieceEdit(menu.rowId) },
+      pieceMoveMenuItem(menu.rowId),
       {
         key: "show",
         icon: <ExternalLink size={14} />,
@@ -37133,50 +37676,290 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         icon: <Copy size={14} />,
         label: `Copy size (${menu.size})`,
         disabled: !menu.size,
-        run: () => void navigator.clipboard?.writeText(menu.size).catch(() => undefined),
+        run: () => copyPieceSize(menu.size),
       },
     ];
-    const width = 260;
+    return (
+      <PieceContextMenu
+        x={menu.x}
+        y={menu.y}
+        title={menu.title}
+        subtitle={[menu.subtitle, menu.size].filter(Boolean).join(" · ")}
+        items={items}
+        onClose={() => setCncPieceMenu(null)}
+      />
+    );
+  };
+  // The Cutlist List's right-click menu (a computer's): Edit piece (its pop-up, as the CNC Cutlist's), Move, Duplicate,
+  // History (its past states, restorable), Change grain direction, Copy size and Delete (Undo to bring it back).
+  const renderCutlistRowMenu = () => {
+    const menu = cutlistRowMenu;
+    if (!menu) return null;
+    const row = cutlistRows.find((r) => r.id === menu.rowId);
+    if (!row) return null;
+    const size = cutlistRowSizeText(row);
+    const items: PieceMenuItem[] = [
+      { key: "edit", icon: <Pencil size={14} />, label: "Edit piece", run: () => openCutlistPieceEdit(row.id) },
+      pieceMoveMenuItem(row.id),
+      { key: "duplicate", icon: <CopyPlus size={14} />, label: "Duplicate", disabled: productionReadOnly, run: () => void duplicateCutlistListRow("production", row.id) },
+      { key: "history", icon: <HistoryIcon size={14} />, label: "History", disabled: !cutlistHistoryKnown[`production:${row.id}`], run: () => openCutlistRowHistory(row.id) },
+      {
+        key: "grain",
+        icon: <RotateCcw size={14} />,
+        label: "Change grain direction",
+        disabled: productionReadOnly || !pieceGrainFlip(row.id),
+        run: () => flipPieceGrain(row.id),
+      },
+      { key: "copy", icon: <Copy size={14} />, label: size ? `Copy size (${size})` : "Copy size", disabled: !size, run: () => copyPieceSize(size) },
+      "divider",
+      { key: "delete", icon: <Trash2 size={14} />, label: "Delete", danger: true, disabled: productionReadOnly, run: () => void removeCutlistRow(row.id, true) },
+    ];
+    return (
+      <PieceContextMenu
+        x={menu.x}
+        y={menu.y}
+        title={String(row.name || "").trim() || "Part"}
+        subtitle={[row.partType, row.room].map((v) => String(v || "").trim()).filter(Boolean).join(" · ")}
+        items={items}
+        onClose={() => setCutlistRowMenu(null)}
+      />
+    );
+  };
+  // The Cutlist Entry's right-click menu: Duplicate, Move (a sub part goes with its row), Copy size, Clear row and Delete row.
+  const renderEntryRowMenu = () => {
+    const menu = entryRowMenu;
+    if (!menu) return null;
+    const draft = cutlistDraftRows.find((r) => r.id === menu.draftId);
+    if (!draft) return null;
+    const size = cutlistRowSizeText(draft);
+    const current = String(draft.room || "").trim();
+    const isSub = subPartDraftRowIds.has(draft.id);
+    const items: PieceMenuItem[] = [
+      { key: "duplicate", icon: <CopyPlus size={14} />, label: "Duplicate", disabled: productionReadOnly, run: () => duplicateDraftCutlistRow(draft.id) },
+      {
+        key: "move",
+        icon: <FolderInput size={14} />,
+        label: "Move",
+        disabled: productionReadOnly || isSub,
+        submenu: {
+          title: "Move to room",
+          empty: "No rooms yet",
+          choices: cutlistEntryRoomOptions.map((room) => ({
+            key: room,
+            label: room,
+            checked: room === current,
+            run: () => {
+              if (room !== current) moveDraftCutlistRowToRoom(draft.id, room);
+            },
+          })),
+        },
+      },
+      { key: "copy", icon: <Copy size={14} />, label: size ? `Copy size (${size})` : "Copy size", disabled: !size, run: () => copyPieceSize(size) },
+      { key: "clear", icon: <Eraser size={14} />, label: "Clear row", disabled: productionReadOnly, run: () => clearDraftCutlistRow(draft.id) },
+      "divider",
+      { key: "delete", icon: <Trash2 size={14} />, label: "Delete row", danger: true, disabled: productionReadOnly, run: () => removeDraftCutlistRow(draft.id, true) },
+    ];
+    return (
+      <PieceContextMenu
+        x={menu.x}
+        y={menu.y}
+        title={String(draft.name || "").trim() || `New ${String(draft.partType || "row").trim()}`}
+        subtitle={[draft.partType, draft.room].map((v) => String(v || "").trim()).filter(Boolean).join(" · ")}
+        items={items}
+        onClose={() => setEntryRowMenu(null)}
+      />
+    );
+  };
+  // History (the Cutlist List's right-click menu): a row's past states, newest first — each the whole row as it was before
+  // a change, with when and who — restorable. lib/cutlist-history.ts keeps them (stamped by every save that changes a
+  // row: persistCutlistContainerNow).
+  const [cutlistRowHistory, setCutlistRowHistory] = useState<{
+    scope: "production" | "initial";
+    rowId: string;
+    entries: CutlistHistoryEntry[] | null;
+    restoringId: string;
+  } | null>(null);
+  // Which parts have any History ("<scope>:<row id>" — true once some's found), so a menu's History is greyed out for one
+  // with none: checked as its menu opens (what's read kept, for the pop-up to show at once), and set by any change made
+  // here (stampCutlistRowHistory).
+  const [cutlistHistoryKnown, setCutlistHistoryKnown] = useState<Record<string, boolean>>({});
+  const cutlistHistoryReadRef = useRef(new Map<string, CutlistHistoryEntry[]>());
+  const checkCutlistRowHistory = async (rowId: string, scope: "production" | "initial") => {
+    if (!project) return;
+    const key = `${scope}:${rowId}`;
+    const entries = await fetchCutlistRowHistory(project, scope === "initial" ? "initialMeasure" : "production", rowId);
+    cutlistHistoryReadRef.current.set(key, entries);
+    const has = entries.length > 0;
+    setCutlistHistoryKnown((prev) => (prev[key] === has ? prev : { ...prev, [key]: has }));
+  };
+  const loadCutlistRowHistory = async (rowId: string, scope: "production" | "initial") => {
+    if (!project) return;
+    const entries = await fetchCutlistRowHistory(project, scope === "initial" ? "initialMeasure" : "production", rowId);
+    cutlistHistoryReadRef.current.set(`${scope}:${rowId}`, entries);
+    setCutlistRowHistory((prev) => (prev && prev.rowId === rowId && prev.scope === scope ? { ...prev, entries } : prev));
+  };
+  const openCutlistRowHistory = (rowId: string, scope: "production" | "initial" = "production") => {
+    // (What its menu just read, straight away — then read again, in case it's changed since.)
+    setCutlistRowHistory({ scope, rowId, entries: cutlistHistoryReadRef.current.get(`${scope}:${rowId}`) ?? null, restoringId: "" });
+    void loadCutlistRowHistory(rowId, scope);
+  };
+  // A past state put back as the row (the state it's in now going into its History, as any change does — so a restore can
+  // be undone from there too).
+  const restoreCutlistRowFromHistory = async (rowId: string, entry: CutlistHistoryEntry, scope: "production" | "initial" = "production") => {
+    const isInitial = scope === "initial";
+    if (isInitial ? salesReadOnly : productionReadOnly) return;
+    const rows = isInitial ? initialCutlistRows : cutlistRows;
+    const current = rows.find((r) => r.id === rowId);
+    if (!current) return;
+    const restored = { ...(entry.row as unknown as CutlistRow), id: rowId, shape: normalizeCutlistShape(entry.row.shape) ?? undefined } as CutlistRow;
+    const next = rows.map((r) => (r.id === rowId ? restored : r));
+    setCutlistRowHistory((prev) => (prev ? { ...prev, restoringId: entry.id } : prev));
+    logCutlistActivity(`${String(restored.name || current.name || "").trim() || "Part"} restored to ${activeDateTime(entry.at, " ")}`, {
+      partType: restored.partType,
+      ...(isInitial ? { scope: "initial" as const } : {}),
+    });
+    if (isInitial) {
+      setInitialCutlistRows(next);
+      await persistInitialCutlistRows(next);
+    } else {
+      setCutlistRows(next);
+      await persistCutlistRows(next);
+    }
+    await loadCutlistRowHistory(rowId, scope);
+    setCutlistRowHistory((prev) => (prev ? { ...prev, restoringId: "" } : prev));
+  };
+  // A field of a row as History shows it: its board's name, its clashing (or a cabinet's shelves), its information lines.
+  const historyCellText = (row: CutlistRow, key: CutlistEditableField) =>
+    key === "information" ? informationLinesFromValue(String(row.information ?? "")).join(" · ") : cutlistValueForActivity(row, key);
+  const renderCutlistRowHistoryPopup = () => {
+    const history = cutlistRowHistory;
+    if (!history || typeof document === "undefined") return null;
+    const isInitialHistory = history.scope === "initial";
+    const current = (isInitialHistory ? initialCutlistRows : cutlistRows).find((r) => r.id === history.rowId);
+    if (!current) return null;
+    const historyReadOnly = isInitialHistory ? salesReadOnly : productionReadOnly;
+    const historyColumnDefs = isInitialHistory ? initialCutlistListColumnDefs : cutlistListColumnDefs;
+    const partType = String(current.partType || "").trim();
+    const palette = cutlistTablePalette(partTypeColors[partType || "Unassigned"] ?? "#CBD5E1");
+    const close = () => setCutlistRowHistory(null);
+    // (The list's columns, with its Room — moving a part is a change too.)
+    const columns: Array<{ key: CutlistEditableField; label: string }> = [
+      ...(historyColumnDefs.some((col) => (col.key as CutlistEditableField) === "room") ? [] : [{ key: "room" as CutlistEditableField, label: "Room" }]),
+      ...historyColumnDefs.map((col) => ({ key: col.key as CutlistEditableField, label: col.label })),
+    ];
+    const pastRows = (history.entries ?? []).map((entry) => ({ entry, row: { ...(entry.row as unknown as CutlistRow), id: current.id } }));
+    // Each state, newest first — now, then before each change — and which of its fields were changed after it (they
+    // differ from the state above it), picked out.
+    const states: Array<{ key: string; row: CutlistRow; entry: CutlistHistoryEntry | null }> = [
+      { key: "now", row: current, entry: null },
+      ...pastRows.map(({ entry, row }) => ({ key: entry.id, row, entry })),
+    ];
+    // (Its time on the left, with its Restore beside it — always in view, however wide the row.)
+    const timeColumnPx = 250;
+    const tableWidth = timeColumnPx + columns.reduce((sum, col) => sum + (PIECE_EDIT_COLUMN_PX[col.key] ?? 120), 0);
     return createPortal(
       <div
-        ref={cncPieceMenuRef}
-        role="menu"
-        aria-label={menu.title}
-        className="fixed z-[2147483647] flex flex-col rounded-[12px] border p-1"
-        style={{
-          left: Math.max(8, Math.min(menu.x, window.innerWidth - width - 8)),
-          top: Math.max(8, Math.min(menu.y, window.innerHeight - 250)),
-          width,
-          ...GLASS_DROPDOWN_MENU_STYLE,
+        className="fixed inset-0 z-[2147483600] flex items-center justify-center px-4"
+        onKeyDown={(e) => {
+          if (e.key !== "Escape") return;
+          e.stopPropagation();
+          close();
         }}
-        onContextMenu={(e) => e.preventDefault()}
       >
-        <div className="px-2.5 pb-1.5 pt-1.5">
-          <p className="truncate text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>
-            {menu.title}
-          </p>
-          <p className="truncate text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
-            {[menu.subtitle, menu.size].filter(Boolean).join(" · ")}
-          </p>
+        <button type="button" aria-label="Close history" onClick={close} className="glass-modal-backdrop absolute inset-0" />
+        <div role="dialog" aria-modal="true" aria-label="Row history" className="glass-modal-panel relative flex max-h-[92vh] w-full max-w-[1840px] flex-col overflow-hidden">
+          <GlassModalHeader title={`History · ${String(current.name || "").trim() || partType || "Part"}`} onClose={close} />
+          <div className="glass-scroll min-h-0 flex-1 overflow-auto px-5 pb-5 pt-1">
+            <div className="overflow-x-auto rounded-[12px] border" style={{ borderColor: palette.border }}>
+              <table className="w-full text-left text-[12px]" style={{ tableLayout: "fixed", minWidth: tableWidth }}>
+                <thead style={{ backgroundColor: palette.headerBg, color: "#000000" }}>
+                  <tr>
+                    <th className="px-2 py-2 text-[12px] font-medium" style={{ width: timeColumnPx, color: "#000000" }}>
+                      Changed
+                    </th>
+                    {columns.map((col) => (
+                      <th
+                        key={col.key}
+                        className={`px-1.5 py-2 text-[12px] font-medium ${isCenteredCutlistColumn(col.key) ? "text-center" : ""}`}
+                        style={{ width: col.key === "information" ? undefined : PIECE_EDIT_COLUMN_PX[col.key] ?? 120, color: "#000000" }}
+                      >
+                        {col.label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {states.map((state, index) => {
+                    const newer = index > 0 ? states[index - 1].row : null;
+                    return (
+                      <tr
+                        key={state.key}
+                        className={index ? "border-t" : ""}
+                        style={{ backgroundColor: index ? palette.rowBg : palette.rowOpenBg, color: palette.text, borderTopColor: palette.divider }}
+                      >
+                        <td className="px-2 py-2 align-middle">
+                          {state.entry ? (
+                            <div className="flex items-center gap-2">
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-[12px] font-medium" style={{ color: palette.text }}>
+                                  {activeDateTime(state.entry.at, " ")}
+                                </p>
+                                {state.entry.by ? (
+                                  <p className="truncate text-[11px] font-medium" style={{ color: palette.text, opacity: 0.7 }}>
+                                    {state.entry.by}
+                                  </p>
+                                ) : null}
+                              </div>
+                              <button
+                                type="button"
+                                disabled={historyReadOnly || Boolean(history.restoringId)}
+                                onClick={() => void restoreCutlistRowFromHistory(current.id, state.entry!, history.scope)}
+                                className="glass-shine inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium text-white hover:brightness-95 disabled:opacity-55"
+                                style={glassShineStyle("var(--brand)")}
+                                title="Put the row back as it was here"
+                              >
+                                <RotateCcw size={13} />
+                                {history.restoringId === state.entry.id ? "Restoring…" : "Restore"}
+                              </button>
+                            </div>
+                          ) : (
+                            <p className="text-[12px] font-semibold" style={{ color: palette.text }}>
+                              Now
+                            </p>
+                          )}
+                        </td>
+                        {columns.map((col) => {
+                          const text = historyCellText(state.row, col.key);
+                          const changed = Boolean(newer) && text !== historyCellText(newer!, col.key);
+                          return (
+                            <td
+                              key={col.key}
+                              className={`px-1.5 py-2 align-middle ${isCenteredCutlistColumn(col.key) ? "text-center" : ""}`}
+                              title={changed ? "Changed after this" : undefined}
+                            >
+                              <span
+                                className={`inline-block max-w-full truncate rounded-[6px] px-1.5 py-0.5 ${changed ? "font-semibold" : "font-medium"}`}
+                                style={changed ? { backgroundColor: "#FDE7BF", color: "#7A4A00" } : undefined}
+                              >
+                                {text || "-"}
+                              </span>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {/* (Only while it's loading — it only opens for a part with History.) */}
+            {history.entries === null ? (
+              <p className="mt-3 text-center text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+                Loading its history…
+              </p>
+            ) : null}
+          </div>
         </div>
-        <div className="mx-1 mb-1 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
-        {items.map((item) => (
-          <button
-            key={item.key}
-            type="button"
-            role="menuitem"
-            disabled={item.disabled}
-            onClick={() => {
-              close();
-              item.run();
-            }}
-            className={pieceMenuItemClass}
-            style={{ color: "var(--text-main)" }}
-          >
-            <span className="inline-flex shrink-0">{item.icon}</span>
-            <span className="min-w-0 truncate">{item.label}</span>
-          </button>
-        ))}
       </div>,
       document.body,
     );
@@ -37205,7 +37988,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     const partType = String(draft.partType || "").trim();
     const color = partTypeColors[partType || "Unassigned"] ?? "#CBD5E1";
     const palette = cutlistTablePalette(color);
-    const readOnly = productionReadOnly || edit.saving;
+    const isInitialEdit = edit.scope === "initial";
+    const readOnly = (isInitialEdit ? salesReadOnly : productionReadOnly) || edit.saving;
     const shape = cutlistRowShape(draft);
     const isCabinetryRow = isCabinetryPartType(partType) && !shape;
     const isClassicDrawer = isClassicDrawerRowLike(draft);
@@ -37220,6 +38004,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     const shown = (text: string) => <span className="block truncate px-1 text-center text-[12px] font-medium">{text || "-"}</span>;
     const numberBox = (key: "height" | "width" | "depth" | "quantity") => (
       <input
+        data-sum-cell={`${draft.id}::${key}`}
         value={String(draft[key] ?? "")}
         disabled={readOnly}
         inputMode="numeric"
@@ -37238,7 +38023,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     const clash = draft.clashLeft || draft.clashRight ? { left: String(draft.clashLeft ?? ""), right: String(draft.clashRight ?? "") } : splitClashing(String(draft.clashing ?? ""));
     const infoLines = informationLinesFromValue(String(draft.information ?? ""));
     // (The list's columns, less a Room one.)
-    const columns = cutlistListColumnDefs.filter((col) => (col.key as CutlistEditableField) !== "room");
+    const columns = (isInitialEdit ? initialCutlistListColumnDefs : cutlistListColumnDefs).filter((col) => (col.key as CutlistEditableField) !== "room");
     const renderField = (key: CutlistEditableField): ReactNode => {
       switch (key) {
         case "partType":
@@ -37246,7 +38031,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <GlassSelectDropdown
               fullWidth
               value={partType}
-              options={Array.from(new Set([partType, ...partTypeOptions].filter(Boolean)))}
+              options={Array.from(new Set([partType, ...(isInitialEdit ? initialMeasurePartTypeOptions : partTypeOptions)].filter(Boolean)))}
               disabled={readOnly}
               onChange={(next) => patchCutlistPieceEdit({ partType: next })}
               getOptionColor={(opt) => partTypeColors[opt || "Unassigned"]}
@@ -37258,7 +38043,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           return (
             <BoardPillDropdown
               value={String(draft.board ?? "")}
-              options={Array.from(new Set([String(draft.board ?? ""), ...cutlistBoardOptions].filter(Boolean)))}
+              options={Array.from(new Set([String(draft.board ?? ""), ...(isInitialEdit ? initialMeasureBoardOptions : cutlistBoardOptions)].filter(Boolean)))}
               disabled={readOnly}
               bg={fieldColors("board").backgroundColor as string}
               border={fieldColors("board").borderColor as string}
@@ -37400,10 +38185,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </div>
           );
         case "grain":
-          return boardGrainFor(String(draft.board ?? "").trim()) ? (
+          return (isInitialEdit ? initialMeasureBoardGrainFor : boardGrainFor)(String(draft.board ?? "").trim()) ? (
             <GrainDimensionToggle
               value={String(draft.grainValue ?? "")}
-              options={grainDimensionChoicesForRow(draft)}
+              options={isInitialEdit ? initialMeasureGrainDimensionChoicesForRow(draft) : grainDimensionChoicesForRow(draft)}
               disabled={readOnly}
               onChange={(v) => patchCutlistPieceEdit({ grainValue: v, grain: Boolean(v) })}
               size="compact"
@@ -37458,11 +38243,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           shape,
           board: String(draft.board ?? ""),
           color,
-          readOnly: productionReadOnly,
+          readOnly: isInitialEdit ? salesReadOnly : productionReadOnly,
           // (The shape's own editor, on the row itself: this pop-up closes, without what's been changed in it.)
           onEdit: (e) => {
             setCutlistPieceEdit(null);
-            openCutlistShapeEditor(e, { mode: "row", rowId: draft.id });
+            openCutlistShapeEditor(e, { mode: "row", rowId: draft.id, ...(isInitialEdit ? { scope: "initial" as const } : {}) });
           },
         })
       : isCabinetryRow
@@ -44268,7 +45053,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           updated[target.key] = value;
           break;
       }
-      return updated;
+      return { ...updated, ...typedSumPatch(updated, target.key) };
     });
     const updatedRow = next.find((row) => row.id === target.rowId) ?? null;
     if (previousRow && updatedRow && target.key === "partType" && previousRow.partType !== updatedRow.partType) {
@@ -50655,6 +51440,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     return (
       <ProtectedRoute>
         {renderSaveStatusPill()}
+        {/* (Over it: a row's right-click menu — the List's or the Entry's — and the History and Edit piece pop-ups from it.) */}
+        {renderInitialRowMenu()}
+        {renderInitialEntryRowMenu()}
+        {renderCutlistRowHistoryPopup()}
+        {renderCutlistPieceEditPopup()}
+        {renderPieceNotice()}
         <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
           {/* Split into a fixed backdrop + content pair — see the mobile branch's own identical
               comment above for the full reasoning. */}
@@ -51037,6 +51828,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             key={draft.id}
                             data-cutlist-entry-grid="initial-draft"
                             data-cutlist-entry-row={draft.id}
+                            // (Right-clicked: its menu — Duplicate, Move, Clear and more — lifting as it opens.)
+                            data-context-lift="true"
+                            onContextMenu={(e) => openInitialEntryRowMenu(e, draft.id)}
                             className="relative grid items-center gap-2 overflow-visible border-y px-1 py-1"
                             style={{
                               gridTemplateColumns: initialCutlistEntryGridTemplate,
@@ -51085,14 +51879,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 onChange={(next) => onInitialDraftBoardChange(draft.id, next)}
                               />
                             </div>
-                            <input
+                            {/* (A name longer than the box scrolls along it while it isn't being typed in, as on the phone.) */}
+                            <ScrollWhenIdleInput
                               ref={registerCutlistWarnCellRef(draft.id, "name")}
                               disabled={salesReadOnly}
                               value={draft.name}
                               onChange={(e) => updateInitialDraftCutlistRow(draft.id, { name: e.target.value })}
                               title={warningForCell(draft.id, "name") || undefined}
-                              className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
-                              style={{ ...warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...initialCutlistEntryCellStyle("name") }}
+                              className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
+                              containerStyle={initialCutlistEntryCellStyle("name")}
+                              style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
                             />
                             {/* (A Custom piece's Height and Width: its shape's outer size — not typed.) */}
                             {draftShape ? (
@@ -51517,7 +52313,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             className="grid transition-[grid-template-rows] duration-300 ease-out"
                             style={{ gridTemplateRows: collapsed ? "0fr" : "1fr" }}
                           >
-                          <div className="overflow-hidden">
+                          {/* (Clipped as it folds, but not a scroll box — overflow: clip — so its tables' heading rows can be held.) */}
+                          <div className="overflow-clip">
                           {/* Its own rows' table, then its Custom area's (cutlistGroupTableParts) — each with its own columns. */}
                           {cutlistGroupTableParts(group).map(({ group, customArea }) => {
                             // The grain toggle needs one segment per filled dimension (2 for most parts,
@@ -51589,7 +52386,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 ))}
                               </tr>
                             </thead>
-                            <tbody>
+                            {/* (Right-clicked anywhere on a part — its row or what's under it: its menu.) */}
+                            <tbody onContextMenu={openInitialRowMenuFromTable}>
                               {group.rows.map((row, idx) => {
                                 const rowPartColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
                                 const rowPartTextColor = isLightHex(rowPartColor) ? "#000000" : "#FFFFFF";
@@ -53587,6 +54385,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     return (
       <ProtectedRoute>
         {renderSaveStatusPill()}
+        {/* (Over it: a row's right-click menu — the List's or the Entry's — and Edit piece's pop-up from it.) */}
+        {renderCutlistRowMenu()}
+        {renderEntryRowMenu()}
+        {renderCutlistRowHistoryPopup()}
+        {renderCutlistPieceEditPopup()}
+        {renderPieceNotice()}
         <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
           <div ref={productionCutlistFullscreenScrollCallbackRef} className="min-h-0 flex-1 overflow-y-auto hide-native-scrollbar">
           {/* Split into a fixed backdrop + content pair — see Initial Measure's own identical
@@ -53964,6 +54768,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         return (
                           <div
                             key={draft.id}
+                            data-context-lift="true"
+                            onContextMenu={(e) => openEntryRowMenu(e, draft.id)}
                             className="relative overflow-visible border-y px-3 py-3"
                             style={{ backgroundColor: draftPalette.rowBg, color: draftTextColor, borderColor: draftPalette.border, ...roundedRowStyle }}
                           >
@@ -53999,6 +54805,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         return (
                           <div
                             key={draft.id}
+                            data-context-lift="true"
+                            onContextMenu={(e) => openEntryRowMenu(e, draft.id)}
                             className="relative overflow-visible border-y px-3 py-3"
                             style={{ backgroundColor: draftPalette.rowBg, color: draftTextColor, borderColor: draftPalette.border, ...roundedRowStyle }}
                           >
@@ -54212,6 +55020,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <div
                             data-cutlist-entry-grid="production-draft"
                             data-cutlist-entry-row={draft.id}
+                            // (Right-clicked: its menu — Duplicate, Move, Clear and more — lifting as it opens.)
+                            data-context-lift="true"
+                            onContextMenu={(e) => openEntryRowMenu(e, draft.id)}
                             className={`relative grid gap-2 overflow-visible ${(draftIsDoor || draftIsCabinetry || isDrawerPartType(draft.partType)) && !isSubPartDraft ? "items-start" : "items-center"} ${isSubPartDraft ? "pl-[2px] pr-[8px] rounded-[16px] border" : "py-1 px-1 border-y"}`}
                             style={{
                               gridTemplateColumns: cutlistEntryGridTemplateFor(squeezedDrawerRowId === draft.id ? DRAWER_BOX_OPEN_EXTRA : 0),
@@ -55112,7 +55923,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             className="grid transition-[grid-template-rows] duration-300 ease-out"
                             style={{ gridTemplateRows: collapsed ? "0fr" : "1fr" }}
                           >
-                          <div className="overflow-hidden">
+                          {/* (Clipped as it folds, but not a scroll box — overflow: clip — so its tables' heading rows can be held.) */}
+                          <div className="overflow-clip">
                           {/* Its own rows' table, then its Custom area's (cutlistGroupTableParts) — each with its own columns. */}
                           {cutlistGroupTableParts(group).map(({ group, customArea }) => {
                             // (The Custom table, or a table's Custom area: its rows each their own part type's pill — its Part
@@ -55165,8 +55977,28 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               table always just its box's width, so it moves with the box (its edge) as that grows and
                               shrinks beside the Rooms column, rather than the edge sliding over the end of it. (Fixed
                               layout: the header cells set the columns.) */}
-                          <table className="w-full text-left text-[12px]" style={{ tableLayout: "fixed" }}>
-                            <thead style={{ backgroundColor: palette.headerBg, color: palette.headerText }}>
+                          <table
+                            className="w-full text-left text-[12px]"
+                            style={{
+                              tableLayout: "fixed",
+                              // (Its heading row's place kept in its solid colour — a strip across the table's top, under the
+                              // heading, its rows covering the rest: so the heading, turning to glass as it's held, has its own
+                              // colour behind it there rather than the page's white, and the rows slide in under it from there.)
+                              backgroundImage: `linear-gradient(${palette.headerBg}, ${palette.headerBg})`,
+                              backgroundSize: "100% 56px",
+                              backgroundRepeat: "no-repeat",
+                            }}
+                          >
+                            <thead
+                              data-list-sticky-head="true"
+                              className="sticky z-[30]"
+                              style={{
+                                backgroundColor: palette.headerBg,
+                                color: palette.headerText,
+                                top: productionCutlistActivityFeed.length ? CUTLIST_FEED_BAND_BOTTOM : 56,
+                                ["--list-head-bg" as string]: palette.headerBg,
+                              } as React.CSSProperties}
+                            >
                               <tr>
                                 <th className="px-2 py-2" style={{ width: listColumnWidth(78) }}></th>
                                 {showRoomColumnInList && (
@@ -55193,7 +56025,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 ))}
                               </tr>
                             </thead>
-                            <tbody>
+                            {/* (Right-clicked anywhere on a part — its row or what's under it: its menu.) */}
+                            <tbody onContextMenu={openCutlistRowMenuFromTable}>
                               {group.rows.map((row, rowIndex) => {
                                 const infoLines = informationLinesFromValue(String(row.information ?? ""));
                                 const rowIsCabinetry = isCabinetryPartType(row.partType);
@@ -55251,7 +56084,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   className="border-t"
                                   style={{
                                     // (Opened — its hinges or parts below it: a deeper wash, with them.)
-                                    backgroundColor: (rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : rowIsDoor ? expandedDoorHingeRowId === row.id || doorOpen : shapeOpen)
+                                    backgroundColor: (rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : rowIsDoor ? Boolean(expandedDoorHingeRows[row.id]) || doorOpen : shapeOpen)
                                       ? palette.rowOpenBg
                                       : palette.rowBg,
                                     color: groupTextColor,
@@ -55346,7 +56179,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             return;
                                           }
                                           if (rowIsDoor) {
-                                            setExpandedDoorHingeRowId((prev) => (prev === row.id ? "" : row.id));
+                                            toggleDoorHingeRow(row.id);
                                             if (rowIsConfiguredDoor) toggleDoorRowExpand(row.id);
                                           }
                                         }}
@@ -55354,7 +56187,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         // (Round, with the glass shine in its part type's colour, as the X beside it; a front of a
                                         // bank edged green.)
                                         style={glassShineStyle(color, rowIsBankFront ? { borderColor: "var(--success-strong)" } : undefined)}
-                                        title={rowIsBankFront ? "Part of the same bank" : (rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : rowIsDoor ? expandedDoorHingeRowId === row.id : false) ? "Collapse details" : "Expand details"}
+                                        title={rowIsBankFront ? "Part of the same bank" : (rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : rowIsDoor ? Boolean(expandedDoorHingeRows[row.id]) : false) ? "Collapse details" : "Expand details"}
                                       >
                                         {rowIsBankFront ? (
                                           <Link2 size={13} color="var(--success-strong)" />
@@ -55363,7 +56196,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             size={13}
                                             color={isLightHex(color) ? palette.text : "#FFFFFF"}
                                             style={{
-                                              transform: (rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : rowIsDoor ? expandedDoorHingeRowId === row.id : false) ? "rotate(180deg)" : "rotate(0deg)",
+                                              transform: (rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : rowIsDoor ? Boolean(expandedDoorHingeRows[row.id]) : false) ? "rotate(180deg)" : "rotate(0deg)",
                                               transition: "transform 120ms ease",
                                             }}
                                           />
@@ -55571,6 +56404,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       return (
                                         <td
                                           key={`${row.id}_${col.label}`}
+                                          data-sum-cell={`${row.id}::height`}
                                           className={`px-2 py-[3px] align-middle ${alignClass} ${isFlashingCell(row.id, "height") ? "cutlist-cell-flash-red" : ""}`}
                                           onDoubleClick={() => startCellEdit(row, "height")}
                                           style={{
@@ -55811,6 +56645,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     return (
                                       <td
                                         key={`${row.id}_${col.label}`}
+                                        data-sum-cell={`${row.id}::${key}`}
                                         className={`px-2 py-[3px] align-middle ${alignClass} ${isFlashingCell(row.id, key) ? "cutlist-cell-flash-red" : ""}`}
                                         onDoubleClick={() => startCellEdit(row, key)}
                                         style={{
@@ -55886,7 +56721,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     })}
                                   </tr>
                                 )}
-                                {rowIsDoor && !rowIsBankFront && expandedDoorHingeRowId === row.id && (
+                                {rowIsDoor && !rowIsBankFront && Boolean(expandedDoorHingeRows[row.id]) && (
                                   <tr
                                     data-cutlist-subrow-parent={row.id}
                                     data-cutlist-subrow-key="hinges"
@@ -63173,7 +64008,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 disabled={productionReadOnly}
                                 value={row.sheetSize}
                                 options={["", ...sheetSizeOptions.map((opt) => `${opt.h} x ${opt.w}`)]}
-                                getOptionPrefix={(value) => <BoardSizeBubble size={shortSheetHeight(value)} />}
                                 onChange={(next) => void onBoardFieldCommit(row.id, { sheetSize: next })}
                                 className="h-7 rounded-[8px] border px-2 text-[12px]"
                                 style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
@@ -63662,7 +64496,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 disabled={productionReadOnly}
                                 value={row.sheetSize}
                                 options={["", ...sheetSizeOptions.map((opt) => `${opt.h} x ${opt.w}`)]}
-                                getOptionPrefix={(value) => <BoardSizeBubble size={shortSheetHeight(value)} />}
                                 onChange={(next) => void onBoardFieldCommit(row.id, { sheetSize: next })}
                                 className="h-9 rounded-[8px] border px-2 text-[12px]"
                                 style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
@@ -64935,129 +65768,78 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </div>
           </div>
           , document.body)}
-          {nestingPieceMenu && typeof document !== "undefined"
-            ? createPortal(
-                (() => {
-                  const menu = nestingPieceMenu;
-                  const parentRowId = parseDerivedNestingRowId(menu.rowId).parentRowId;
-                  const typeGroup = nestingSidebarGroups.find((group) => group.partType === menu.partType);
-                  const close = () => setNestingPieceMenu(null);
-                  const itemClass =
-                    "flex w-full items-center gap-2.5 rounded-[8px] px-2.5 py-2 text-left text-[13px] font-medium transition hover:bg-[color-mix(in_srgb,var(--brand)_12%,transparent)] disabled:pointer-events-none disabled:opacity-45";
-                  const items: Array<{ key: string; icon: ReactNode; label: string; danger?: boolean; disabled?: boolean; run: () => void } | "divider"> = [
-                    {
-                      key: "edit",
-                      icon: <Pencil size={14} />,
-                      label: "Edit piece",
-                      run: () => openCutlistPieceEdit(menu.rowId),
-                    },
-                    {
-                      key: "show",
-                      icon: <ExternalLink size={14} />,
-                      label: "Show in the Production Cutlist",
-                      run: () => jumpToCutlistFromDerivedRowId(menu.rowId),
-                    },
-                    {
-                      key: "grain",
-                      icon: <RotateCcw size={14} />,
-                      label: "Change grain direction",
-                      disabled: productionReadOnly || !pieceGrainFlip(menu.rowId),
-                      run: () => flipPieceGrain(menu.rowId),
-                    },
-                    {
-                      key: "find",
-                      icon: <Search size={14} />,
-                      label: "Find in list",
-                      run: () => {
-                        // (Its part type opened in the rail, and its row scrolled to and picked out a moment.)
-                        setNestingCollapsedGroups((prev) => ({ ...prev, [`pt:${menu.partType}`]: false }));
+          {nestingPieceMenu
+            ? (() => {
+                const menu = nestingPieceMenu;
+                const parentRowId = parseDerivedNestingRowId(menu.rowId).parentRowId;
+                const typeGroup = nestingSidebarGroups.find((group) => group.partType === menu.partType);
+                const items: PieceMenuItem[] = [
+                  { key: "edit", icon: <Pencil size={14} />, label: "Edit piece", run: () => openCutlistPieceEdit(menu.rowId) },
+                  pieceMoveMenuItem(menu.rowId),
+                  {
+                    key: "show",
+                    icon: <ExternalLink size={14} />,
+                    label: "Show in the Production Cutlist",
+                    run: () => jumpToCutlistFromDerivedRowId(menu.rowId),
+                  },
+                  {
+                    key: "grain",
+                    icon: <RotateCcw size={14} />,
+                    label: "Change grain direction",
+                    disabled: productionReadOnly || !pieceGrainFlip(menu.rowId),
+                    run: () => flipPieceGrain(menu.rowId),
+                  },
+                  {
+                    key: "find",
+                    icon: <Search size={14} />,
+                    label: "Find in list",
+                    run: () => {
+                      // (Its part type opened in the rail, and its row scrolled to and picked out a moment.)
+                      setNestingCollapsedGroups((prev) => ({ ...prev, [`pt:${menu.partType}`]: false }));
+                      window.setTimeout(() => {
+                        const row = document.querySelector<HTMLElement>(`[data-nest-vis-row="${CSS.escape(parentRowId)}"]`);
+                        if (!row) return;
+                        row.scrollIntoView({ behavior: "smooth", block: "center" });
+                        row.style.outline = "2px solid var(--brand)";
+                        row.style.outlineOffset = "-2px";
                         window.setTimeout(() => {
-                          const row = document.querySelector<HTMLElement>(`[data-nest-vis-row="${CSS.escape(parentRowId)}"]`);
-                          if (!row) return;
-                          row.scrollIntoView({ behavior: "smooth", block: "center" });
-                          row.style.outline = "2px solid var(--brand)";
-                          row.style.outlineOffset = "-2px";
-                          window.setTimeout(() => {
-                            row.style.outline = "";
-                            row.style.outlineOffset = "";
-                          }, 1600);
-                        }, 60);
-                      },
+                          row.style.outline = "";
+                          row.style.outlineOffset = "";
+                        }, 1600);
+                      }, 60);
                     },
-                    {
-                      key: "copy",
-                      icon: <Copy size={14} />,
-                      label: `Copy size (${menu.size})`,
-                      run: () => void navigator.clipboard?.writeText(menu.size).catch(() => undefined),
-                    },
-                    "divider",
-                    {
-                      key: "leave",
-                      icon: <EyeOff size={14} />,
-                      label: "Leave out of nesting",
-                      danger: true,
-                      disabled: productionReadOnly || !parentRowId,
-                      run: () => onToggleNestingVisibility(parentRowId, false),
-                    },
-                    {
-                      key: "leave-type",
-                      icon: <Layers size={14} />,
-                      label: `Leave out every ${menu.partType || "piece of this type"}`,
-                      danger: true,
-                      disabled: productionReadOnly || !typeGroup?.rows.length,
-                      run: () => typeGroup?.rows.forEach((row) => onToggleNestingVisibility(row.id, false)),
-                    },
-                  ];
-                  const width = 250;
-                  return (
-                    <div
-                      ref={nestingPieceMenuRef}
-                      role="menu"
-                      aria-label={menu.title}
-                      className="fixed z-[2147483647] flex flex-col rounded-[12px] border p-1"
-                      style={{
-                        left: Math.max(8, Math.min(menu.x, (typeof window !== "undefined" ? window.innerWidth : 1280) - width - 8)),
-                        top: Math.max(8, Math.min(menu.y, (typeof window !== "undefined" ? window.innerHeight : 800) - 350)),
-                        width,
-                        ...GLASS_DROPDOWN_MENU_STYLE,
-                      }}
-                      onContextMenu={(e) => e.preventDefault()}
-                    >
-                      <div className="px-2.5 pb-1.5 pt-1.5">
-                        <p className="truncate text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>
-                          {menu.title}
-                        </p>
-                        <p className="truncate text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
-                          {[menu.subtitle, menu.size].filter(Boolean).join(" · ")}
-                        </p>
-                      </div>
-                      <div className="mx-1 mb-1 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
-                      {items.map((item, index) =>
-                        item === "divider" ? (
-                          <div key={`divider_${index}`} className="mx-1 my-1 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
-                        ) : (
-                          <button
-                            key={item.key}
-                            type="button"
-                            role="menuitem"
-                            disabled={item.disabled}
-                            onClick={() => {
-                              close();
-                              item.run();
-                            }}
-                            className={itemClass}
-                            style={{ color: item.danger ? "var(--danger)" : "var(--text-main)" }}
-                          >
-                            <span className="inline-flex shrink-0">{item.icon}</span>
-                            <span className="min-w-0 truncate">{item.label}</span>
-                          </button>
-                        ),
-                      )}
-                    </div>
-                  );
-                })(),
-                document.body,
-              )
+                  },
+                  { key: "copy", icon: <Copy size={14} />, label: `Copy size (${menu.size})`, run: () => copyPieceSize(menu.size) },
+                  "divider",
+                  {
+                    key: "leave",
+                    icon: <EyeOff size={14} />,
+                    label: "Leave out of nesting",
+                    danger: true,
+                    disabled: productionReadOnly || !parentRowId,
+                    run: () => onToggleNestingVisibility(parentRowId, false),
+                  },
+                  {
+                    key: "leave-type",
+                    icon: <Layers size={14} />,
+                    label: `Leave out every ${menu.partType || "piece of this type"}`,
+                    danger: true,
+                    disabled: productionReadOnly || !typeGroup?.rows.length,
+                    run: () => typeGroup?.rows.forEach((row) => onToggleNestingVisibility(row.id, false)),
+                  },
+                ];
+                return (
+                  <PieceContextMenu
+                    x={menu.x}
+                    y={menu.y}
+                    title={menu.title}
+                    subtitle={[menu.subtitle, menu.size].filter(Boolean).join(" · ")}
+                    items={items}
+                    width={250}
+                    onClose={() => setNestingPieceMenu(null)}
+                  />
+                );
+              })()
             : null}
           {nestingTooltip && (
             <div
@@ -69525,10 +70307,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         <button
                                           type="button"
                                           disabled={rowIsBankFront || !rowIsDoorForActions}
-                                          onClick={() => { if (rowIsBankFront) return; setExpandedDoorHingeRowId((prev) => (prev === row.id ? "" : row.id)); }}
+                                          onClick={() => { if (rowIsBankFront) return; toggleDoorHingeRow(row.id); }}
                                           className={`relative z-[1] inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border ${(rowIsBankFront || rowIsDoorForActions) ? "" : "invisible pointer-events-none"}`}
                                           style={{ backgroundColor: rowPartColor, borderColor: rowIsBankFront ? "var(--success-strong)" : darkenHex(rowPartColor, 0.18) }}
-                                          title={rowIsBankFront ? "Part of the same bank" : expandedDoorHingeRowId === row.id ? "Collapse details" : "Expand details"}
+                                          title={rowIsBankFront ? "Part of the same bank" : Boolean(expandedDoorHingeRows[row.id]) ? "Collapse details" : "Expand details"}
                                         >
                                           {rowIsBankFront ? (
                                             <Link2 size={13} color="var(--success-strong)" />
@@ -69537,7 +70319,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               size={13}
                                               color="#FFFFFF"
                                               style={{
-                                                transform: expandedDoorHingeRowId === row.id ? "rotate(180deg)" : "rotate(0deg)",
+                                                transform: Boolean(expandedDoorHingeRows[row.id]) ? "rotate(180deg)" : "rotate(0deg)",
                                                 transition: "transform 120ms ease",
                                               }}
                                             />
@@ -69983,6 +70765,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       return (
                                         <td
                                           key={`${row.id}_${col.label}`}
+                                          data-sum-cell={`${row.id}::${key}`}
                                           className={`px-2 py-[3px] align-middle ${alignClass}`}
                                           onDoubleClick={() => {
                                             if (rowIsDoorDepthCell) return;
@@ -70037,7 +70820,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       );
                                     })}
                                   </tr>
-                                  {rowIsDoorForActions && !rowIsBankFront && expandedDoorHingeRowId === row.id && (
+                                  {rowIsDoorForActions && !rowIsBankFront && Boolean(expandedDoorHingeRows[row.id]) && (
                                     <tr
                                       data-cutlist-subrow-parent={row.id}
                                       data-cutlist-subrow-key="hinges"

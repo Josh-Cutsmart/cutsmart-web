@@ -17,6 +17,7 @@ whatsNew: [
 <li>The CNC Cutlist has a right-click menu: Edit piece, Show in the Production Cutlist, Change grain direction and Copy size</li>
 <li>Right-clicking a row or card anywhere in the app lifts it a little and dims everything else while its menu is open. Clicking away from a right-click menu just closes it, without opening what you clicked on</li>
 <li>Nesting's right-click menu can change a piece's grain direction. It only turns if the piece still fits its sheet that way, otherwise a yellow note says why</li>
+<li>Nesting packs tighter and uses fewer sheets where it can. Pieces are laid flat in rows from the corner, so most of the sheet is left as one big offcut, and a piece is only turned when that helps (never against its grain)</li>
 <li>In the Cutlist List and the CNC Cutlist, linked drawer fronts sit together in one green box</li>
 <li>Changing the part type of one linked drawer front changes the whole bank with it, so its fronts stay together</li>
 <li>Quote discounts: ask for one from the quote's bottom bar with Request Discount, as a new total, an amount off or a percentage off. It comes off the price before GST, and GST is worked out on what's left. Whoever can answer discounts is notified and can accept it, decline it, or make a counter offer for you to accept or decline. Once it's agreed, the new total shows everywhere the quote's price does, and a quote still waiting on the client comes off the client portal so the new one can be sent. The client only ever sees the new total</li>
@@ -34,6 +35,23 @@ whatsNew: [
 <li>Switching a board's Grain off leaves its pieces looking like ones with no grain, but remembers each piece's grain direction. Switch it back on and they're all as you set them</li>
 <li>On a piece's drawing, you can unclash every edge so it has no clashing at all, and the Clashing dropdowns always follow the drawing (and the drawing the dropdowns)</li>
 <li>Edges clicked on a piece's drawing before its sizes are typed in stay on the sides you clicked, and its Clashing changes between long (L) and short (S) to match once the sizes are in</li>
+<li>A piece's drawing uses whichever two of its Height, Width and Depth it has, so a gable (Height × Depth) or a shelf (Width × Depth) is drawn the right shape</li>
+<li>Cutlist List: each table's column headings stay at the top, just under the changes bar, as you scroll through its parts. While held they fade to frosted glass in their own colour, with no flash as they catch, and round off only where they reach the table's rounded bottom corners</li>
+<li>Cutlist List: right-click a part for Edit piece (its pop-up, as in the CNC Cutlist), Move to another room, Duplicate, History, Change grain direction, Copy size and Delete (with Undo)</li>
+<li>History: every change to a part in the Cutlist List is kept, newest first, as the whole row as it was, with when it changed and who changed it. What changed is picked out in amber, and Restore puts the part back as it was at that point (a restore can be undone the same way)</li>
+<li>Cutlist Entry: right-click a row to Duplicate it (every field you've filled in copies over, empty ones stay empty), Move it to another room, Copy its size, Clear it or Delete it</li>
+<li>Initial Measure has the same: right-click a part in its list for Edit piece, Move, Duplicate, History, Change grain direction, Copy size and Delete, or a row in its entry for Duplicate, Move, Copy size, Clear and Delete. Its parts keep their History too, with Restore</li>
+<li>Board Settings' Sheet Size box shows just the size, without the small sheet height bubble. Its column is only as wide as its longest size, giving Colour the room</li>
+<li>Cutlist Entry: a part name too long for its box scrolls along it, as on phones, until you click into it to type</li>
+<li>On a laptop-sized screen, the Cutlist Entry's Grain switch no longer goes off the right of the screen. Board, Part Name, Clashing and Information narrow a little to make room (Production and Initial Measure)</li>
+<li>The CNC Cutlist's and Nesting's right-click menus have Move, to put a piece in another room</li>
+<li>Sums typed in a Height, Width, Depth or Quantity box are remembered. Point at the box (or its cell in the Cutlist List) to see each step of how it was worked out</li>
+<li>Cutlist List: open as many parts' details at once as you like, doors' hinges included</li>
+<li>A door's drawing on its Clashing shows its hinges where they go</li>
+<li>A cabinet with its grain along its width now has its sides' grain running up their height, carrying on round from the top and bottom</li>
+<li>The Cutlist Entry's top stays frosted glass while it's held, even in a room you've only just added the first piece to</li>
+<li>User Settings › Checklists no longer crashes on phones when you open a checklist</li>
+<li>Lacquered pieces no longer get clashing they shouldn't: a cabinet on a lacquered board has none on its sides, bottom, top or shelves, and a linked drawer front on a lacquered board of its own doesn't take its bank's automatic clashing</li>
 <li>In dark mode, notes boxes no longer have a shadow round them while you're typing</li>
 <li>Drawing: cabinets' toe kicks (and the false cabinet behind a dropped part) are as high as Cabinetry's Foot Height, or 150mm when it's blank</li>
 <li>Production: dropdown arrows flip while they're open, like the rest of the app</li>
@@ -76,6 +94,7 @@ whatsNew: [
 
 <u><b>Everywhere</b></u>
 <ul>
+<li>The "Something went wrong" screen has a red Report button under Try again and Go to Dashboard. It sends us the problem with where you were, then takes you to the Dashboard</li>
 <li>The Log Out pop-up's buttons match the rest of the app</li>
 <li>Search only shows its loading wheel the first time. After that it updates quietly while your last results are already there</li>
 <li>Every search box works the same way: the same X to clear it, in the same place, and the same look while you're using it. On phones, Contacts' search opens and closes like the Dashboard's</li>

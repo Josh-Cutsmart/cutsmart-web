@@ -26,8 +26,14 @@ export function useFloatingStickyHeader({
   remountKey?: string;
 }): boolean {
   const [stuck, setStuck] = useState(false);
+  // The marker being watched: picked up whenever it comes (or changes) — checked after every render, so a header that
+  // only appears later (a room's first piece added, the "add your first piece" prompt giving way to the entry) is
+  // watched as soon as it's there, not only if it was there when the room was opened.
+  const [marker, setMarker] = useState<HTMLElement | null>(null);
   useEffect(() => {
-    const marker = markerRef.current;
+    if (markerRef.current !== marker) setMarker(markerRef.current);
+  });
+  useEffect(() => {
     if (!marker || !scrollEl || typeof IntersectionObserver === "undefined") return;
     const observer = new IntersectionObserver(
       ([entry]) => setStuck(!entry.isIntersecting && entry.boundingClientRect.top < (entry.rootBounds?.top ?? 0) + holdOffset),
@@ -39,7 +45,7 @@ export function useFloatingStickyHeader({
       observer.disconnect();
       setStuck(false);
     };
-  }, [scrollEl, markerRef, holdOffset, remountKey]);
+  }, [scrollEl, marker, holdOffset, remountKey]);
   useEffect(() => {
     const clipped = () => clipRefs.map((ref) => ref.current).filter((el): el is HTMLElement => Boolean(el));
     if (!stuck || !scrollEl) {

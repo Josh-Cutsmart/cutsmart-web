@@ -71,6 +71,9 @@ export type CutlistRow = {
   // A Custom part type's piece: the shape it's cut to (lib/cutlist-shape.ts) — its Height and Width are the shape's
   // outer size, its edge banding the shape's own.
   shape?: CutlistShape;
+  // The sums typed in its Height / Width / Depth / Quantity boxes that came to what's in them ("720-18" for a Height of 702),
+  // by field — shown on pointing at that box or cell (lib/dimension-math.ts sumShownFor: only while it still holds the answer).
+  sums?: Partial<Record<"height" | "width" | "depth" | "quantity", string>>;
 };
 
 export type CutlistDraftRow = CutlistRow;

@@ -311,6 +311,24 @@ body[data-theme="dark"].cs-app .bg-white {
   background-color: var(--panel-bg) !important;
 }
 
+/* The Cutlist List's tables' heading rows, held under the top bar (or the feed's band) as their rows scroll: while held
+   (data-stuck), they fade from their solid colour to frosted glass in it. Square-cornered: the table's box (its rounded,
+   clipped section) rounds them only once they reach its bottom corners, following its outline. The glass is the whole
+   heading row's (one blur — each cell blurring on its own left seams between them); each cell carries the solid colour
+   over it and fades it out, so it eases into the glass rather than flashing. */
+thead[data-list-sticky-head] > tr > th {
+  background-color: var(--list-head-bg, transparent);
+  transition: background-color 260ms ease;
+}
+thead[data-list-sticky-head][data-stuck="true"] {
+  background-color: color-mix(in srgb, var(--list-head-bg, var(--panel-bg)) 62%, transparent) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  backdrop-filter: blur(16px) saturate(180%);
+}
+thead[data-list-sticky-head][data-stuck="true"] > tr > th {
+  background-color: transparent;
+}
+
 /* Every on/off switch's knob: white — and in dark mode the text's own colour, light enough that a switch never looks
    greyed out (as .bg-white it became a dark dot on the dark track). */
 .cs-switch-knob {

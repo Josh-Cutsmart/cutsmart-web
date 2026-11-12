@@ -148,6 +148,15 @@ const sizeMm = (value: unknown): number => {
   const n = Number.parseFloat(evaluateDimensionMath(text) ?? text);
   return Number.isFinite(n) && n > 0 ? n : 0;
 };
+// A piece as its edge drawing draws it: its Height up (else its Depth) and its Width across (else its Depth) — whichever
+// two of its three sizes it has, as its part label draws it (a gable's Height × Depth, a shelf's Width × Depth).
+export function pieceDrawnSize(row: { height?: unknown; width?: unknown; depth?: unknown }): { height: string; width: string } {
+  const height = String(row.height ?? "").trim();
+  const width = String(row.width ?? "").trim();
+  const depth = String(row.depth ?? "").trim();
+  return { height: sizeMm(height) > 0 ? height : depth, width: sizeMm(width) > 0 ? width : depth };
+}
+
 // A piece's clashed edges after its Height or Width change, when they were picked on its drawing before its size said
 // which way round it is: with a size missing (or the two the same) the drawing's only a stand-in, so which edges it
 // called long and which short wasn't real. Each edge stays on the side it was clicked on (its top, its right…), called

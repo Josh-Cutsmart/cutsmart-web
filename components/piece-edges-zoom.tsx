@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { EdgeTapeMenu } from "@/components/edge-tape-menu";
+import type { DoorHingeSide } from "@/components/door-hinge-diagram";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { evaluateDimensionMath } from "@/lib/dimension-math";
 import { EDGE_KEYS, edgeSide, type EdgeKey, type EdgeSide, type ResolvedEdge, type RowEdges } from "@/lib/edge-tapes";
@@ -13,6 +14,13 @@ import { EDGE_KEYS, edgeSide, type EdgeKey, type EdgeSide, type ResolvedEdge, ty
 // company's edge tapes (Company Settings › Materials & Boards), or unclash it.
 
 export type PieceEdgeTapeOption = { id: string; name: string; label: string };
+// A door's hinges, for its drawing: Up measured up from the bottom, Down down from the top (along the top for Top: Up from
+// the left, Down from the right), on the side it's hinged.
+export type PieceHinges = { up: string[]; down: string[]; side: DoorHingeSide };
+
+// Each hinge's cup (35 mm across, its centre 22.5 mm in from the hinged edge — as on its label and the hinge drawing).
+const CUP_RADIUS_MM = 17.5;
+const CUP_INSET_MM = 22.5;
 
 const PREVIEW_BOX = { width: 240, height: 220 };
 const PREVIEW_GAP_PX = 10;
@@ -61,6 +69,33 @@ function Cross({ cx, cy, half, stroke, width }: { cx: number; cy: number; half: 
   );
 }
 
+// A door's hinge cups where they go on its drawing (x, y its top-left, w × h its size there; hMm × wMm its real size): on
+// its left (LH, and a pair's — Mirror — first door) or right (RH) edge, or along its top (Top). Just where they are — no
+// measurements. (No side yet: on its left, faded.)
+function HingeCups({ hinges, x, y, w, h, hMm, wMm, ink }: { hinges: PieceHinges; x: number; y: number; w: number; h: number; hMm: number; wMm: number; ink: string }) {
+  if (!hMm || !wMm) return null;
+  const scale = w / wMm;
+  const r = Math.max(3, CUP_RADIUS_MM * scale);
+  const inset = Math.max(r + 1, CUP_INSET_MM * scale);
+  const ups = hinges.up.map(mmOf).filter((n) => n > 0);
+  const downs = hinges.down.map(mmOf).filter((n) => n > 0);
+  const clamp = (v: number, length: number) => Math.min(length - r - 1, Math.max(r + 1, v));
+  const cups =
+    hinges.side === "Top"
+      ? [...ups.map((v) => v * scale), ...downs.map((v) => w - v * scale)].map((along) => ({ cx: x + clamp(along, w), cy: y + inset }))
+      : [...ups.map((v) => h - v * scale), ...downs.map((v) => v * scale)].map((along) => ({
+          cx: hinges.side === "RH" ? x + w - inset : x + inset,
+          cy: y + clamp(along, h),
+        }));
+  return (
+    <g opacity={hinges.side ? 1 : 0.45} pointerEvents="none">
+      {cups.map((cup, index) => (
+        <circle key={index} cx={cup.cx} cy={cup.cy} r={r} fill="rgba(255, 255, 255, 0.9)" stroke={ink} strokeOpacity={0.7} strokeWidth={1.2} />
+      ))}
+    </g>
+  );
+}
+
 const midOf = (side: EdgeSide, x: number, y: number, w: number, h: number) =>
   side === "top" ? { x: x + w / 2, y } : side === "bottom" ? { x: x + w / 2, y: y + h } : side === "left" ? { x, y: y + h / 2 } : { x: x + w, y: y + h / 2 };
 
@@ -93,6 +128,7 @@ function PieceEdgesMeasured({
   edges,
   tapes,
   color,
+  hinges,
   boxWidth,
   boxHeight,
   onEdgeClick,
@@ -103,6 +139,7 @@ function PieceEdgesMeasured({
   edges: ResolvedEdge[];
   tapes: PieceEdgeTapeOption[];
   color?: string;
+  hinges?: PieceHinges;
   boxWidth: number;
   boxHeight: number;
   onEdgeClick?: (key: EdgeKey, event: React.MouseEvent<SVGElement>) => void;
@@ -124,6 +161,8 @@ function PieceEdgesMeasured({
   return (
     <svg width={svgW} height={svgH} viewBox={`0 0 ${svgW} ${svgH}`} style={{ display: "block", maxWidth: "100%" }} role="img" aria-label="Piece drawing">
       <rect x={x} y={y} width={box.w} height={box.h} rx={3} fill={color ? `color-mix(in srgb, ${color} 30%, white)` : "var(--panel-muted)"} stroke={ink} strokeOpacity={0.6} strokeWidth={1.2} />
+      {/* (A door: its hinges where they go.) */}
+      {hinges ? <HingeCups hinges={hinges} x={x} y={y} w={box.w} h={box.h} hMm={hMm} wMm={wMm} ink={ink} /> : null}
       {/* Its size: width along the bottom, height up its left. */}
       {wMm ? (
         <text x={x + box.w / 2} y={y + box.h + 17} textAnchor="middle" fontSize={12} fontWeight={600} fill={soft}>
@@ -198,6 +237,7 @@ export function PieceEdgesZoom({
   edges,
   tapes,
   color,
+  hinges,
   title,
   editable,
   onChange,
@@ -212,6 +252,8 @@ export function PieceEdgesZoom({
   // The company's edge tapes, most picked first.
   tapes: PieceEdgeTapeOption[];
   color?: string;
+  // A door's hinges: drawn where they go (no measurements).
+  hinges?: PieceHinges;
   title?: string;
   editable?: boolean;
   // Its clashed edges after an edge's been changed in the pop-up (each one there clashed — "" the board's own tape).
@@ -437,7 +479,7 @@ export function PieceEdgesZoom({
                 boxShadow: "inset 0 0 0 999px color-mix(in srgb, var(--panel-bg) 22%, transparent), var(--shadow-glass)",
               }}
             >
-              <PieceEdgesMeasured height={height} width={width} edges={edges} tapes={tapes} color={color} boxWidth={PREVIEW_BOX.width} boxHeight={PREVIEW_BOX.height} />
+              <PieceEdgesMeasured height={height} width={width} edges={edges} tapes={tapes} color={color} hinges={hinges} boxWidth={PREVIEW_BOX.width} boxHeight={PREVIEW_BOX.height} />
             </div>,
             document.body,
           )
@@ -469,6 +511,7 @@ export function PieceEdgesZoom({
                       edges={edges}
                       tapes={tapes}
                       color={color}
+                      hinges={hinges}
                       boxWidth={popupBox.width}
                       boxHeight={popupBox.height}
                       onEdgeClick={canEdit ? onEdgeClick : undefined}

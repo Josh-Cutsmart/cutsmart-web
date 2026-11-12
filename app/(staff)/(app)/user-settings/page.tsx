@@ -1447,11 +1447,6 @@ export default function UserSettingsPage() {
       </div>
     );
   };
-  const phoneCard = (
-    <div className="fixed inset-x-4 z-[31] rounded-[18px] border px-4" style={{ ...glassCardStyle, top: PHONE_CARD_TOP_PX, height: PHONE_CARD_HEIGHT_PX }}>
-      {renderPhoneCardContent()}
-    </div>
-  );
   const phoneValueClass = "max-w-[55%] truncate text-[13px]";
   const phoneInputStyle = { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" } as const;
   // Name / Mobile, editable in place (16px text, so a phone doesn't zoom in on it).
@@ -1721,6 +1716,13 @@ export default function UserSettingsPage() {
       </div>
     </div>
   ) : null;
+  // (Made here, below the open checklist and its name editing: the card shows a checklist's title while its page is open,
+  // and reading those before they're worked out crashed the page.)
+  const phoneCard = (
+    <div className="fixed inset-x-4 z-[31] rounded-[18px] border px-4" style={{ ...glassCardStyle, top: PHONE_CARD_TOP_PX, height: PHONE_CARD_HEIGHT_PX }}>
+      {renderPhoneCardContent()}
+    </div>
+  );
 
   // Every setting on every page, for the first page's search: tapping one opens its page (a notification
   // opens Notifications searched for it; a checklist opens Checklists, then its own page slides in).
