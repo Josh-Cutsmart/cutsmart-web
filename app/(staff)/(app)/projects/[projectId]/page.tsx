@@ -92,7 +92,7 @@ import { useKeepMenuInView } from "@/lib/use-keep-menu-in-view";
 import { markKeyboardStandIn } from "@/lib/use-keyboard-inset";
 import { RoomNameCombobox } from "@/components/room-name-combobox";
 import { contrastTextForFill } from "@/lib/user-profile-format";
-import { DEFAULT_CART_COPY_FORMAT, drawerHeightItemNumber, formatCartCopyLine, hardwareItemNumber, normalizeBoardFinishes, normalizeHardwareRows, normalizeMmOptions, normalizeSheetSizes, type HardwareTypeRow } from "@/lib/production-hardware";
+import { DEFAULT_CART_COPY_FORMAT, drawerHeightItemNumber, formatCartCopyLine, hardwareItemNumber, normalizeBoardFinishes, normalizeHardwareRows, normalizeMmOptions, normalizeSheetSizes, PUSH_TO_OPEN, type HardwareTypeRow } from "@/lib/production-hardware";
 import { GlassSwitch, modalCloseButtonClass, Segmented } from "@/components/settings-ui";
 import { normalizeSmallJobStatuses } from "@/lib/small-jobs";
 import { ContactCardPopup } from "@/components/contact-card-popup";
@@ -5629,9 +5629,11 @@ function drawerBreakdownForDrawer(hardwareRows: HardwareTypeRow[], category: str
     drawerOptions.find((row) => row.isDefault) ??
     drawerOptions[0];
   const letterValueMap: Record<string, string> = {};
-  // (Each height's own runner lengths — some don't come in every length — and the weights each of those comes in.)
+  // (Each height's own runner lengths — some don't come in every length — and the weights each of those comes in; and the
+  // weights each comes in push to open at — null: at its length, with no weights.)
   const lengthsByHeight: Record<string, number[]> = {};
   const weightsByHeight: Record<string, Record<number, number[]>> = {};
+  const pushByHeight: Record<string, Record<number, Array<number | null>>> = {};
   for (const opt of drawerRow?.heightOptions ?? []) {
     const token = String(opt.token || "").trim();
     if (!token) continue;
@@ -5639,6 +5641,9 @@ function drawerBreakdownForDrawer(hardwareRows: HardwareTypeRow[], category: str
     letterValueMap[key] = sanitizeDerivedValue(opt.value) || token;
     lengthsByHeight[key] = opt.lengths.slice().sort((a, b) => a - b);
     weightsByHeight[key] = Object.fromEntries(opt.byLength.map((entry) => [entry.length, entry.weights]));
+    pushByHeight[key] = Object.fromEntries(
+      opt.byLength.map((entry) => [entry.length, entry.optionItemNumbers.filter((item) => item.option === PUSH_TO_OPEN).map((item) => item.weight)]),
+    );
   }
   return {
     bottomsWidthMinus: drawerRow?.bottomsWidthMinus ?? null,
@@ -5651,6 +5656,8 @@ function drawerBreakdownForDrawer(hardwareRows: HardwareTypeRow[], category: str
     hardwareWeights: drawerRow?.hardwareWeights ?? [],
     defaultWeight: drawerRow?.defaultWeight ?? null,
     weightsByHeight,
+    pushToOpen: Boolean(drawerRow?.hardwareOptions.includes(PUSH_TO_OPEN)),
+    pushByHeight,
   };
 }
 type DrawerBreakdown = ReturnType<typeof drawerBreakdownForDrawer>;
@@ -5687,9 +5694,181 @@ function drawerWeightOptions(breakdown: DrawerBreakdown, height: string, runner:
   if (byLength && byLength[runner]) return byLength[runner].slice().sort((a, b) => a - b);
   return all;
 }
+// Whether a drawer can be push to open: its drawer type comes in push to open, and at its height, runner length and weight
+// (Company Settings › Hardware) — any of them while it has no runner yet (no depth), or at a height it doesn't have set up.
+function drawerPushAvailable(breakdown: DrawerBreakdown, height: string, runner: number, weight: number): boolean {
+  if (!breakdown.pushToOpen) return false;
+  if (!(runner > 0)) return true;
+  const byLength = breakdown.pushByHeight[drawerHeightKey(height)];
+  if (!byLength) return true;
+  return (byLength[runner] ?? []).some((at) => at == null || !(weight > 0) || at === weight);
+}
 // How much wider the Cutlist Entry's Depth column goes with a drawer box opened out (cutlistEntryGridTemplateFor) — room for
-// its letter, the depth with a little room, and its weight.
-const DRAWER_BOX_OPEN_EXTRA = 64;
+// its letter and the depth with a little room. (Its weight and Push to open are in the drop-down under it —
+// DrawerBoxDropdown.)
+const DRAWER_BOX_OPEN_EXTRA = 40;
+// The Cutlist Entry's open drawer box's drop-down: under the box (over it, with no room under), floating over the page like
+// every dropdown — its weight (each its drawer type has: the one it is picked; those it doesn't come in at its height and
+// runner length struck through; its Auto one says so on hover) and its Push to open switch (where it can be push to open).
+// Pressing in it keeps the cursor in the box's depth, so the box stays open; it goes as the box closes.
+function DrawerBoxDropdown({
+  weights,
+  options,
+  weight,
+  autoWeight,
+  push,
+  editable,
+  onSetWeight,
+  onSetPush,
+}: {
+  // Its drawer type's weights, in their Company Settings order ([] — none), and those it comes in where it is.
+  weights: number[];
+  options: number[];
+  weight: number;
+  autoWeight: number;
+  // Its Push to open (null — it can't be push to open where it is).
+  push: { on: boolean } | null;
+  editable: boolean;
+  onSetWeight: (weight: number) => void;
+  onSetPush: (on: boolean) => void;
+}) {
+  const markerRef = useRef<HTMLSpanElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  // (Under the box — its middle under the box's — or over it; following it as it slides open, and the page as it scrolls.)
+  useLayoutEffect(() => {
+    const place = () => {
+      const anchor = markerRef.current?.parentElement;
+      const el = menuRef.current;
+      if (!anchor || !el) return;
+      const rect = anchor.getBoundingClientRect();
+      const edge = 8;
+      const gap = 4;
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+      const above = rect.bottom + gap + h > window.innerHeight - edge && rect.top - gap - h >= edge;
+      el.style.left = `${Math.round(Math.min(window.innerWidth - w - edge, Math.max(edge, rect.left + rect.width / 2 - w / 2)))}px`;
+      el.style.top = `${Math.round(above ? rect.top - gap - h : rect.bottom + gap)}px`;
+      el.style.transformOrigin = above ? "50% 100%" : "50% 0%";
+      el.style.visibility = "visible";
+    };
+    place();
+    const started = performance.now();
+    let frame = 0;
+    const follow = () => {
+      place();
+      if (performance.now() - started < 450) frame = requestAnimationFrame(follow);
+    };
+    frame = requestAnimationFrame(follow);
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, []);
+  if (!weights.length && !push) return null;
+  return (
+    <>
+      <span ref={markerRef} aria-hidden="true" className="hidden" />
+      {typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={menuRef}
+              data-drawer-box-dropdown="true"
+              className="glass-menu-squeeze fixed left-0 top-0 grid grid-cols-[auto_auto] items-center gap-x-2.5 gap-y-1.5 rounded-[10px] border px-2.5 py-2"
+              style={{ visibility: "hidden", zIndex: 2147482000, ...GLASS_DROPDOWN_MENU_STYLE }}
+              // (The cursor stays in the box's depth — so the box stays open.)
+              onMouseDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+              onContextMenu={(e) => e.stopPropagation()}
+            >
+              {weights.length ? (
+                <>
+                  <span className="text-[12px] font-medium text-[var(--text-main)]">Weight</span>
+                  <span className="flex items-center gap-1">
+                    {weights.map((item) => {
+                      const ok = options.includes(item);
+                      const current = item === weight;
+                      return (
+                        <button
+                          key={item}
+                          type="button"
+                          disabled={!ok || !editable}
+                          aria-pressed={current}
+                          onClick={() => {
+                            if (ok && !current) onSetWeight(item);
+                          }}
+                          title={ok ? `${item}kg${item === autoWeight ? " (Auto)" : ""}` : `Doesn't come in ${item}kg here`}
+                          className={`glass-shine inline-flex h-7 items-center justify-center whitespace-nowrap rounded-full border px-2.5 text-[12px] font-medium transition disabled:cursor-default ${
+                            current ? "" : "glass-shine-neutral"
+                          } ${ok ? "" : "line-through opacity-50"} ${ok && !current && editable ? "hover:brightness-95" : ""}`}
+                          style={current ? glassShineStyle("var(--brand)", { color: "#FFFFFF" }) : { color: "var(--text-main)" }}
+                        >
+                          {item}kg
+                        </button>
+                      );
+                    })}
+                  </span>
+                </>
+              ) : null}
+              {push ? (
+                <>
+                  <button
+                    type="button"
+                    disabled={!editable}
+                    onClick={() => onSetPush(!push.on)}
+                    className="whitespace-nowrap text-left text-[12px] font-medium text-[var(--text-main)] disabled:cursor-default"
+                  >
+                    Push to open
+                  </button>
+                  <span className="flex">
+                    <GlassSwitch size="sm" checked={push.on} disabled={!editable} onChange={onSetPush} ariaLabel="Push to open" />
+                  </span>
+                </>
+              ) : null}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+// A drawer's Push to open pill: "PTO" — faint when it's Standard, solid when it's push to open (in its row's colours, as its
+// weight's pill); pressed, the other.
+function DrawerPushPill({ on, editable, size, onSet }: { on: boolean; editable: boolean; size: "small" | "large"; onSet: (on: boolean) => void }) {
+  const ref = useRef<HTMLButtonElement | null>(null);
+  useLayoutEffect(() => applyDrawerWeightTint(ref.current, on), [on]);
+  return (
+    <button
+      ref={ref}
+      type="button"
+      disabled={!editable}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onSet(!on);
+      }}
+      onDoubleClick={(e) => e.stopPropagation()}
+      aria-pressed={on}
+      title={on ? "Push to open — click for Standard" : "Standard — click for push to open"}
+      className={`inline-flex shrink-0 items-center justify-center rounded-full border leading-none transition disabled:cursor-default ${
+        size === "large" ? "h-[20px] px-[6px] text-[10px]" : "h-[15px] px-[4px] text-[9px]"
+      } ${on ? "font-semibold" : "font-normal opacity-70"}`}
+      style={{
+        backgroundColor: `color-mix(in srgb, currentColor ${on ? 22 : 8}%, transparent)`,
+        borderColor: `color-mix(in srgb, currentColor ${on ? 55 : 30}%, transparent)`,
+      }}
+    >
+      PTO
+    </button>
+  );
+}
 // A drawer weight's pill or bubble, tinted from the text colour round it (its row's): made solid at that tint over what's
 // behind it, with its text black or white against it (contrastTextForFill) — so on a dark tint its weight goes white.
 // Written straight onto the element (after React's own style), as it's only known once it's on the page.
@@ -6635,6 +6814,18 @@ function withDrawerDepth<T extends { height?: string; depth?: string; drawerDept
   return { ...row, drawerDepths };
 }
 // Kept weights as stored — only drawers with a weight of their own ("B#2"; a height on its own, its first).
+// A Drawer row's drawers marked push to open (CutlistRow.drawerPushToOpen): their keys ("B#2", the second B — a height on its
+// own, its first), each once.
+function normalizeDrawerPushToOpen(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: string[] = [];
+  for (const token of raw) {
+    const name = String(token ?? "").trim().toUpperCase();
+    const key = name && !name.includes("#") ? `${name}#1` : name;
+    if (key && !out.includes(key)) out.push(key);
+  }
+  return out.length ? out : undefined;
+}
 function normalizeDrawerWeights(raw: unknown): Record<string, string> | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const out: Record<string, string> = {};
@@ -8435,6 +8626,7 @@ function serializeCutlistRowsForStorage(
       Depth: row.depth,
       ...(normalizeDrawerDepths(row.drawerDepths) ? { DrawerDepths: normalizeDrawerDepths(row.drawerDepths) } : {}),
       ...(normalizeDrawerWeights(row.drawerWeights) ? { DrawerWeights: normalizeDrawerWeights(row.drawerWeights) } : {}),
+      ...(normalizeDrawerPushToOpen(row.drawerPushToOpen) ? { DrawerPushToOpen: normalizeDrawerPushToOpen(row.drawerPushToOpen) } : {}),
       // A Custom part type's piece: its shape (lib/cutlist-shape.ts — its points as {x, y}, Firestore holding no arrays of
       // arrays).
       ...(row.shape ? { Shape: cutlistShapeForStorage(row.shape) } : {}),
@@ -8499,6 +8691,7 @@ function serializeCutlistRowsSnapshot(rows: CutlistRow[]) {
       depth: String(row.depth ?? ""),
       drawerDepths: normalizeDrawerDepths(row.drawerDepths) ?? null,
       drawerWeights: normalizeDrawerWeights(row.drawerWeights) ?? null,
+      drawerPushToOpen: normalizeDrawerPushToOpen(row.drawerPushToOpen) ?? null,
       shape: row.shape ? cutlistShapeForStorage(row.shape) : null,
       quantity: String(row.quantity ?? ""),
       clashing: String(row.clashing ?? ""),
@@ -12455,6 +12648,7 @@ export default function ProjectDetailsPage() {
             hingesDown: normalizeDoorHingeValues(item.hingesDown ?? item.HingesDown ?? item.hingeDown ?? item.HingeDown),
             drawerDepths: normalizeDrawerDepths(item.DrawerDepths ?? item.drawerDepths),
             drawerWeights: normalizeDrawerWeights(item.DrawerWeights ?? item.drawerWeights),
+            drawerPushToOpen: normalizeDrawerPushToOpen(item.DrawerPushToOpen ?? item.drawerPushToOpen),
             // A Custom part type's piece: its shape, as Production's rows keep it (serializeCutlistRowsForStorage's Shape).
             shape: normalizeCutlistShape(item.Shape ?? item.shape),
             edges: normalizeRowEdges(item.Edges ?? item.edges),
@@ -20046,6 +20240,7 @@ export default function ProjectDetailsPage() {
       depth: String(seed?.depth ?? ""),
       drawerDepths: normalizeDrawerDepths(seed?.drawerDepths),
       drawerWeights: normalizeDrawerWeights(seed?.drawerWeights),
+      drawerPushToOpen: normalizeDrawerPushToOpen(seed?.drawerPushToOpen),
       // (A Custom piece's shape — kept as it is, or brought back from this device's copy of the Cutlist Entry.)
       shape: normalizeCutlistShape(seed?.shape),
       edges: normalizeRowEdges(seed?.edges),
@@ -22278,6 +22473,7 @@ export default function ProjectDetailsPage() {
             hingeSide: normalizeHingeSideValue(item.hingeSide ?? item.HingeSide),
             drawerDepths: normalizeDrawerDepths(item.DrawerDepths ?? item.drawerDepths),
             drawerWeights: normalizeDrawerWeights(item.DrawerWeights ?? item.drawerWeights),
+            drawerPushToOpen: normalizeDrawerPushToOpen(item.DrawerPushToOpen ?? item.drawerPushToOpen),
             shape: normalizeCutlistShape(item.Shape ?? item.shape),
             edges: normalizeRowEdges(item.Edges ?? item.edges),
             sums: normalizeRowSums(item.Sums ?? item.sums),
@@ -30311,6 +30507,42 @@ export default function ProjectDetailsPage() {
     setCutlistRows(nextRows);
     await persistCutlistRows(nextRows);
   };
+  // A list row's drawers marked push to open (drawerPushPill): saved straight away, as a weight is.
+  const commitDrawerPushToOpen = async (rowId: string, keys: string[] | undefined) => {
+    const nextRows = cutlistRows.map((r) => (r.id === rowId ? { ...r, drawerPushToOpen: keys } : r));
+    setCutlistRows(nextRows);
+    await persistCutlistRows(nextRows);
+  };
+  // Whether a drawer can be push to open where it is (drawerPushAvailable at its height, runner and weight) — and is.
+  const drawerPushInfo = (row: CutlistRow, key: string): { available: boolean; on: boolean } => {
+    const breakdown = drawerBreakdownForRoom(row.room);
+    if (!breakdown.pushToOpen) return { available: false, on: false };
+    const height = drawerDepthLabel(key);
+    const runner = drawerRunnerLength(breakdown, toNum(drawerDepthFor(row, key)), height);
+    const weight = drawerWeightFor(breakdown, height, runner, String(row.drawerWeights?.[key] ?? ""));
+    const available = drawerPushAvailable(breakdown, height, runner, weight);
+    return { available, on: available && Boolean(row.drawerPushToOpen?.includes(key)) };
+  };
+  // A drawer's Push to open pill (DrawerPushPill), where its drawer type comes in push to open and it can be at its height,
+  // runner and weight — pressed, it's push to open (or Standard again).
+  const drawerPushPill = (row: CutlistRow, key: string, onPick: (keys: string[] | undefined) => void, size: "small" | "large") => {
+    const { available, on } = drawerPushInfo(row, key);
+    if (!available) return null;
+    return (
+      <DrawerPushPill
+        on={on}
+        editable={!productionReadOnly}
+        size={size}
+        onSet={(next) => {
+          const keys = (row.drawerPushToOpen ?? []).filter((item) => item !== key);
+          if (next) keys.push(key);
+          onPick(keys.length ? keys : undefined);
+        }}
+      />
+    );
+  };
+  // How much wider an Entry row's drawer box opens (DRAWER_BOX_OPEN_EXTRA).
+  const drawerBoxOpenExtraFor = (rowId: string): number => (rowId ? DRAWER_BOX_OPEN_EXTRA : 0);
   // A drawer's runner weight in kg (drawerWeightFor at its height and runner length) — 0 when its drawer type has none.
   const drawerWeightOf = (row: CutlistRow, key: string): number => {
     const breakdown = drawerBreakdownForRoom(row.room);
@@ -30466,9 +30698,11 @@ export default function ProjectDetailsPage() {
           const label = drawerDepthLabel(key);
           const mm = mmByLetter[label.toLowerCase()];
           return (
-            <span key={key} className="inline-flex items-center whitespace-nowrap px-1" title={mm && mm !== label ? `${label}: ${mm}` : undefined}>
+            <span key={key} className="inline-flex items-center gap-1 whitespace-nowrap px-1" title={mm && mm !== label ? `${label}: ${mm}` : undefined}>
               <span aria-hidden="true" className="inline-block h-[15px] w-0" />
               {label}
+              {/* (Push to open, where its drawer type comes in it — pressed, the other.) */}
+              {drawerPushPill(row, key, (keys) => void commitDrawerPushToOpen(row.id, keys), "small")}
             </span>
           );
         })}
@@ -30563,14 +30797,40 @@ export default function ProjectDetailsPage() {
             </div>
           );
         }
-        const weightPill = drawerWeightPill(
-          draft,
-          key,
-          (weights) => updateDraftCutlistRow(draft.id, { drawerWeights: weights }),
-          "large",
-          isOpen,
-          isOpen && Boolean(openDrawerDepthBox?.wheel),
-        );
+        // (Its weight and Push to open: the drop-down under it — DrawerBoxDropdown — while it's open.)
+        const dropdown = isOpen
+          ? (() => {
+              const breakdown = drawerBreakdownForRoom(draft.room);
+              const height = drawerDepthLabel(key);
+              const runner = drawerRunnerLength(breakdown, toNum(drawerDepthFor(draft, key)), height);
+              const options = breakdown.hardwareWeights.length ? drawerWeightOptions(breakdown, height, runner) : [];
+              const autoWeight = drawerWeightFor(breakdown, height, runner, "");
+              const pushInfo = drawerPushInfo(draft, key);
+              return (
+                <DrawerBoxDropdown
+                  weights={options.length ? breakdown.hardwareWeights : []}
+                  options={options}
+                  weight={weight}
+                  autoWeight={autoWeight}
+                  push={pushInfo.available ? { on: pushInfo.on } : null}
+                  editable={!productionReadOnly}
+                  onSetWeight={(next) => {
+                    // (Back at its Auto weight: Auto again.)
+                    const weights = { ...(draft.drawerWeights ?? {}) };
+                    if (next === autoWeight) delete weights[key];
+                    else weights[key] = String(next);
+                    updateDraftCutlistRow(draft.id, { drawerWeights: Object.keys(weights).length ? weights : undefined });
+                  }}
+                  onSetPush={(next) => {
+                    const keys = (draft.drawerPushToOpen ?? []).filter((item) => item !== key);
+                    if (next) keys.push(key);
+                    updateDraftCutlistRow(draft.id, { drawerPushToOpen: keys.length ? keys : undefined });
+                  }}
+                />
+              );
+            })()
+          : null;
+        const openExtra = drawerBoxOpenExtraFor(draft.id);
         // (The top one: its column's width, the column itself sliding wider. Those under it: sliding out from the column's
         // own width over the room beside them — .drawer-box-grow / -shrink.)
         const ownsWidth = Boolean(closedWidth) && keyIndex > 0;
@@ -30589,8 +30849,8 @@ export default function ProjectDetailsPage() {
                 ...(ownsWidth
                   ? {
                       ["--drawer-box-from" as string]: `${closedWidth}px`,
-                      ["--drawer-box-to" as string]: `${(closedWidth ?? 0) + DRAWER_BOX_OPEN_EXTRA}px`,
-                      width: isClosing ? closedWidth : (closedWidth ?? 0) + DRAWER_BOX_OPEN_EXTRA,
+                      ["--drawer-box-to" as string]: `${(closedWidth ?? 0) + openExtra}px`,
+                      width: isClosing ? closedWidth : (closedWidth ?? 0) + openExtra,
                     }
                   : { width: "100%" }),
                 // (Solid, over what's beside it — the field's own wash on top.)
@@ -30611,8 +30871,8 @@ export default function ProjectDetailsPage() {
                 }
               }}
             >
-              {/* (The letter and weight against its sides — sliding out with them and back in to their short form's places,
-                  growing and shrinking as they go.) */}
+              {/* (The letter against its left — sliding out with it and back in to its short form's place, growing and shrinking
+                  as it goes.) */}
               <span className="absolute left-1 top-1/2 flex -translate-y-1/2">{letterBubble(true)}</span>
               <input
                 autoFocus={isOpen}
@@ -30635,11 +30895,10 @@ export default function ProjectDetailsPage() {
                 className="absolute left-1/2 top-0 h-full w-[44px] -translate-x-1/2 bg-transparent text-center outline-none"
                 style={{ color: "inherit" }}
               />
-              {/* (Growing from its short form's bubble — and back — .drawer-box-weight.) */}
-              {weightPill ? (
-                <span className="drawer-box-weight absolute right-1 top-1/2 flex -translate-y-1/2">{weightPill}</span>
-              ) : null}
+              {/* (Closing: its weight's bubble fading in where its short form has it — .drawer-box-bubble, globals.css.) */}
+              {isClosing && weight ? <span className="drawer-box-bubble absolute right-1 top-1/2 flex -translate-y-1/2">{weightBubble}</span> : null}
             </div>
+            {dropdown}
           </div>
         );
       })}
@@ -32643,6 +32902,7 @@ export default function ProjectDetailsPage() {
       depth: String(source.depth ?? ""),
       drawerDepths: normalizeDrawerDepths(source.drawerDepths),
       drawerWeights: normalizeDrawerWeights(source.drawerWeights),
+      drawerPushToOpen: normalizeDrawerPushToOpen(source.drawerPushToOpen),
       ...(source.shape ? { shape: source.shape } : {}),
       quantity: isClassicDrawerMode
         ? String(Math.max(1, drawerTokens.length))
@@ -36266,8 +36526,8 @@ export default function ProjectDetailsPage() {
       el.style.gridTemplateColumns = cutlistEntryGridTemplateFor(from);
       frames.set(rowId, requestAnimationFrame(step));
     };
-    if (was) slide(was, DRAWER_BOX_OPEN_EXTRA, 0, 200);
-    if (squeezedDrawerRowId) slide(squeezedDrawerRowId, 0, DRAWER_BOX_OPEN_EXTRA, 240);
+    if (was) slide(was, drawerBoxOpenExtraFor(was), 0, 200);
+    if (squeezedDrawerRowId) slide(squeezedDrawerRowId, 0, drawerBoxOpenExtraFor(squeezedDrawerRowId), 240);
   }, [squeezedDrawerRowId, cutlistEntryGridTemplateFor]);
   const initialCutlistEntryGridTemplate = useMemo(() => {
     const cols = ["28px"];
@@ -44779,6 +45039,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       runnerLength: number;
       // (Its runner weight, kg — 0: its drawer type has none.)
       weight: number;
+      // (Push to open: its own ID number — Company Settings › Hardware.)
+      pushToOpen: boolean;
       backHeight: string;
       total: number;
     };
@@ -44818,7 +45080,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       if (!tokens.length) tokens = ["-"];
       // (By height and runner length: a bank's drawers of one height can be at different depths.)
       const drawerKeys = drawerDepthKeys(row);
-      const groupedHeights: Record<string, { height: string; hardwareDepthLabel: string; runnerLength: number; weight: number; count: number }> = {};
+      const groupedHeights: Record<string, { height: string; hardwareDepthLabel: string; runnerLength: number; weight: number; pushToOpen: boolean; count: number }> = {};
       tokens.forEach((token, index) => {
         const tokenClean = sanitizeDerivedValue(token);
         const tokenWithCountMatch = tokenClean.match(/^(.*?)(?:\s*\(\s*x\s*(\d+)\s*\))$/i);
@@ -44834,19 +45096,26 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           displayHeight === "-"
             ? 0
             : drawerWeightFor(selectedDrawerBreakdown, tokenBase, drawerDepthHere.runner, String(row.drawerWeights?.[drawerKeys[index] ?? ""] ?? ""));
-        const groupedKey = `${displayHeight}|${drawerDepthHere.label}|${drawerWeightHere}`;
+        // (And push to open: its own ID number too — where its drawer type comes in it and it can be there.)
+        const drawerKeyHere = drawerKeys[index] ?? "";
+        const drawerPushHere =
+          displayHeight !== "-" &&
+          Boolean(drawerKeyHere && row.drawerPushToOpen?.includes(drawerKeyHere)) &&
+          drawerPushAvailable(selectedDrawerBreakdown, tokenBase, drawerDepthHere.runner, drawerWeightHere);
+        const groupedKey = `${displayHeight}|${drawerDepthHere.label}|${drawerWeightHere}|${drawerPushHere ? "pto" : ""}`;
         const grouped = groupedHeights[groupedKey] ?? {
           height: displayHeight,
           hardwareDepthLabel: drawerDepthHere.label,
           runnerLength: drawerDepthHere.runner,
           weight: drawerWeightHere,
+          pushToOpen: drawerPushHere,
           count: 0,
         };
         grouped.count += tokenCount;
         groupedHeights[groupedKey] = grouped;
       });
-      for (const { height, hardwareDepthLabel, runnerLength, weight, count: perDrawerQty } of Object.values(groupedHeights)) {
-        const groupKey = `${selectedCategory}|${selectedDrawerType}|${hardwareDepthLabel}|${height}|${weight}`;
+      for (const { height, hardwareDepthLabel, runnerLength, weight, pushToOpen, count: perDrawerQty } of Object.values(groupedHeights)) {
+        const groupKey = `${selectedCategory}|${selectedDrawerType}|${hardwareDepthLabel}|${height}|${weight}|${pushToOpen ? "pto" : ""}`;
         if (!groups[groupKey]) {
           groups[groupKey] = {
             key: groupKey,
@@ -44855,6 +45124,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             hardwareLength: hardwareDepthLabel,
             runnerLength,
             weight,
+            pushToOpen,
             backHeight: height || "-",
             total: 0,
           };
@@ -44878,7 +45148,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         if (byLength) return byLength;
         const byHeight = a.backHeight.localeCompare(b.backHeight);
         if (byHeight) return byHeight;
-        return a.weight - b.weight;
+        if (a.weight !== b.weight) return a.weight - b.weight;
+        return Number(a.pushToOpen) - Number(b.pushToOpen);
       });
   })();
   const orderDrawerQtyTotal = orderDrawerGroupedRows.reduce((sum, group) => sum + group.total, 0);
@@ -44902,7 +45173,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const orderOtherRows = orderOtherRowsByCategory[orderSelectedHardwareCategoryKey] ?? [];
   const orderHingeQtyTotal = orderHingeRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0);
   const orderOtherQtyTotal = orderOtherRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0);
-  // A drawer line's supplier ID number (Company Settings › Hardware: its height's, at its runner length and weight).
+  // A drawer line's supplier ID number (Company Settings › Hardware: its height's, at its runner length and weight — and its
+  // Push to open's, when it's push to open).
   const orderDrawerItemNumber = (group: (typeof orderDrawerGroupedRows)[number]) =>
     drawerHeightItemNumber(
       hardwareRows.find((row) => row.name.trim().toLowerCase() === group.hardware.trim().toLowerCase()),
@@ -44910,6 +45182,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       group.backHeight,
       group.runnerLength,
       group.weight || undefined,
+      group.pushToOpen ? PUSH_TO_OPEN : undefined,
     );
   // "Copy for cart": the hinges, other items and the brand's drawers on the order, a line each in the brand's Copy format
   // (Company Settings › Hardware › Ordering) — to paste into its supplier's quick order. One ID number twice: its
@@ -44932,7 +45205,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   }
   for (const group of orderDrawerGroupedRows) {
     if (group.total <= 0 || group.hardware.trim().toLowerCase() !== orderHardwareName.trim().toLowerCase()) continue;
-    const name = `${group.drawerType} ${group.backHeight} ${group.hardwareLength}${group.weight ? ` ${group.weight}kg` : ""}`;
+    const name = `${group.drawerType} ${group.backHeight} ${group.hardwareLength}${group.weight ? ` ${group.weight}kg` : ""}${group.pushToOpen ? " push to open" : ""}`;
     const id = orderDrawerItemNumber(group).trim();
     if (!id) {
       orderCartMissing.push(name);
@@ -44949,7 +45222,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     Object.keys(orderSelectedHardwareRow?.hingeItemNumbers ?? {}).length ||
       Object.keys(orderSelectedHardwareRow?.otherItemNumbers ?? {}).length ||
       orderSelectedHardwareRow?.drawers.some((drawer) =>
-        drawer.heightOptions.some((height) => height.byLength.some((entry) => entry.itemNumber || entry.weightItemNumbers.some((item) => item.itemNumber))),
+        drawer.heightOptions.some((height) =>
+          height.byLength.some(
+            (entry) => entry.itemNumber || entry.weightItemNumbers.some((item) => item.itemNumber) || entry.optionItemNumbers.some((item) => item.itemNumber),
+          ),
+        ),
       ),
   );
   const orderMiscDraftForCategory = orderMiscDraftByCategory[orderSelectedHardwareCategoryKey] ?? {};
@@ -50527,8 +50804,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       <p className="truncate font-medium" style={{ color: "var(--text-main)" }}>
                                         {group.hardwareLength || "-"}
                                       </p>
-                                      <p className="truncate" style={{ color: "var(--text-main)" }}>
-                                        {group.backHeight || "-"}
+                                      {/* (Push to open: a PTO tag beside its back height, as on its drawers in the cutlist — its own line and
+                                          ID number.) */}
+                                      <p className="flex min-w-0 items-center gap-1" style={{ color: "var(--text-main)" }} title={group.pushToOpen ? "Push to open" : undefined}>
+                                        <span className="truncate">{group.backHeight || "-"}</span>
+                                        {group.pushToOpen ? (
+                                          <span
+                                            className="inline-flex h-[16px] shrink-0 items-center rounded-full border px-[5px] text-[9.5px] font-semibold leading-none"
+                                            style={{
+                                              borderColor: "color-mix(in srgb, currentColor 45%, transparent)",
+                                              backgroundColor: "color-mix(in srgb, currentColor 14%, transparent)",
+                                            }}
+                                          >
+                                            PTO
+                                          </span>
+                                        ) : null}
                                       </p>
                                       {drawerWeightColumn ? (
                                         <p className="truncate" style={{ color: "var(--text-main)" }}>
@@ -55025,7 +55315,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             onContextMenu={(e) => openEntryRowMenu(e, draft.id)}
                             className={`relative grid gap-2 overflow-visible ${(draftIsDoor || draftIsCabinetry || isDrawerPartType(draft.partType)) && !isSubPartDraft ? "items-start" : "items-center"} ${isSubPartDraft ? "pl-[2px] pr-[8px] rounded-[16px] border" : "py-1 px-1 border-y"}`}
                             style={{
-                              gridTemplateColumns: cutlistEntryGridTemplateFor(squeezedDrawerRowId === draft.id ? DRAWER_BOX_OPEN_EXTRA : 0),
+                              gridTemplateColumns: cutlistEntryGridTemplateFor(squeezedDrawerRowId === draft.id ? drawerBoxOpenExtraFor(draft.id) : 0),
                               backgroundColor: draftPalette.rowBg,
                               color: draftTextColor,
                               borderColor: draftPalette.border,

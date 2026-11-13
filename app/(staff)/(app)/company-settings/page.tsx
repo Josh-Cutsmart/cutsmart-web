@@ -3,14 +3,14 @@
 import { notificationText } from "@/lib/notification-messages";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { SETTINGS_SEARCH_INDEX, SETTINGS_SECTIONS as sections, type SettingsSection } from "@/lib/company-settings-sections";
-import { CART_COPY_PLACEHOLDERS, DEFAULT_CART_COPY_FORMAT, formatCartCopyLine } from "@/lib/production-hardware";
+import { CART_COPY_PLACEHOLDERS, DEFAULT_CART_COPY_FORMAT, formatCartCopyLine, PUSH_TO_OPEN } from "@/lib/production-hardware";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { useUndo } from "@/components/undo-bar";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
 import { ContractorIconPicker, normalizeContractorIcons } from "@/components/contractor-icon";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Building2, Check, CheckCircle2, ChevronDown, CircleHelp, ClipboardList, Clock3, DatabaseBackup, Download, GripVertical, HardHat, Layers3, Loader2, Package2, Plus, RotateCcw, Search, Settings, Trophy, Upload, Users, X } from "lucide-react";
+import { ArrowLeft, Building2, CheckCircle2, ChevronDown, CircleHelp, ClipboardList, Clock3, DatabaseBackup, Download, GripVertical, HardHat, Layers3, Loader2, Package2, Plus, RotateCcw, Search, Settings, Trophy, Upload, Users, X } from "lucide-react";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
 import { authorizedFetch } from "@/lib/api-fetch";
@@ -1665,10 +1665,26 @@ function readDrawerWeights(item: Record<string, unknown>): string[] {
   return rows.map((v) => toStr(v)).filter(Boolean);
 }
 
+// Whether a drawer type comes in push to open (its switch): each height's lengths (and weights) then have a Push to open
+// code beside their Standard one, and its drawers can each be marked push to open in the cutlist.
+function readDrawerPushToOpen(item: Record<string, unknown>): boolean {
+  return Boolean(item.pushToOpen);
+}
+function writeDrawerPushToOpen(item: Record<string, unknown>, on: boolean): Record<string, unknown> {
+  const next = { ...item };
+  if (on) next.pushToOpen = true;
+  else delete next.pushToOpen;
+  return next;
+}
+// A Push to open code's key — and its switch's, where it's off: its length, its weight ("" — no weights), then Push to open
+// ("500|65|Push to open").
+const drawerPushKey = (length: string, weight: string | null) => `${length.trim()}|${(weight ?? "").trim()}|${PUSH_TO_OPEN}`;
+
 // A height's own details: the runner lengths it doesn't come in, the weights each of its lengths doesn't come in
-// ("500|65" — a length and weight together), and its supplier's ID numbers — one for each weight a length comes in
-// ("500|65"), or for the length ("500") on a drawer type with no weights. Kept beside its heights (backs.heights stays as
-// it was, "M 90"), by the height's letter in lower case:
+// ("500|65" — a length and weight together), where it doesn't come in push to open ("500|65|Push to open"), and its
+// supplier's ID numbers — one for each weight a length comes in ("500|65"), or for the length ("500") on a drawer type with
+// no weights, and each of those's Push to open ("500|65|Push to open", "500||Push to open"). Kept beside its heights
+// (backs.heights stays as it was, "M 90"), by the height's letter in lower case:
 // { m: { lengthsOff: ["300"], combosOff: ["350|65"], itemNumbers: { "500|30": "770M5002S", "500|65": "770M5002T" } } }.
 // Nothing set: no entry — so a length or weight added later is on for every height.
 type DrawerHeightDetails = { lengthsOff: string[]; combosOff: string[]; itemNumbers: Record<string, string> };
@@ -1700,16 +1716,20 @@ function describeDrawerHeight(item: Record<string, unknown>, label: string): { t
   const details = readDrawerHeightDetails(item, label);
   const lengths = readDrawerLengths(item);
   const weights = readDrawerWeights(item);
+  const pushToOpen = readDrawerPushToOpen(item);
   const parts = lengths
     .filter((length) => !details.lengthsOff.includes(length))
     .map((length) => {
       const on = weights.filter((weight) => !details.combosOff.includes(drawerComboKey(length, weight)));
       const withId = (text: string, key: string) => (details.itemNumbers[key] ? `${text} ${details.itemNumbers[key]}` : text);
+      // (Its Push to open after it, where it comes in it.)
+      const withPush = (text: string, weight: string | null) =>
+        pushToOpen && !details.combosOff.includes(drawerPushKey(length, weight)) ? `${text}, push to open${details.itemNumbers[drawerPushKey(length, weight)] ? ` ${details.itemNumbers[drawerPushKey(length, weight)]}` : ""}` : text;
       const notes = weights.length
         ? on.length
-          ? on.map((weight) => withId(`${weight}kg`, drawerComboKey(length, weight))).join(", ")
+          ? on.map((weight) => withPush(withId(`${weight}kg`, drawerComboKey(length, weight)), weight)).join("; ")
           : "no weight"
-        : withId("", length).trim();
+        : withPush(withId("", length).trim(), null).replace(/^, /, "");
       return notes ? `${length} (${notes})` : length;
     });
   const restricted = details.lengthsOff.some((v) => lengths.includes(v)) || details.combosOff.length > 0;
@@ -1723,6 +1743,24 @@ function writeDrawerHeightDetailsMap(item: Record<string, unknown>, map: Record<
   return next;
 }
 
+// A height's details written back by its letter (nothing set: its entry goes) — its codes trimmed, empty ones dropped.
+function writeDrawerHeightDetails(item: Record<string, unknown>, label: string, details: DrawerHeightDetails): Record<string, unknown> {
+  const map = readDrawerHeightDetailsMap(item);
+  const key = label.trim().toLowerCase();
+  const own: Record<string, unknown> = {};
+  if (details.lengthsOff.length) own.lengthsOff = details.lengthsOff;
+  if (details.combosOff.length) own.combosOff = details.combosOff;
+  const itemNumbers = Object.fromEntries(
+    Object.entries(details.itemNumbers)
+      .map(([code, value]) => [code, value.trim()] as const)
+      .filter(([, value]) => value),
+  );
+  if (Object.keys(itemNumbers).length) own.itemNumbers = itemNumbers;
+  if (Object.keys(own).length) map[key] = own;
+  else delete map[key];
+  return writeDrawerHeightDetailsMap(item, map);
+}
+
 // A height written back: its "M 90" in backs.heights (at `index`, or added on the end — null), and its details, moved
 // along with it if its letter changed.
 function writeDrawerHeight(item: Record<string, unknown>, index: number | null, height: DrawerHeightDraft): Record<string, unknown> {
@@ -1734,17 +1772,27 @@ function writeDrawerHeight(item: Record<string, unknown>, index: number | null, 
   const nextHeights = index != null && index < heights.length ? heights.map((v, i) => (i === index ? text : v)) : [...heights, text];
   const map = readDrawerHeightDetailsMap(item);
   if (previousLabel) delete map[previousLabel.toLowerCase()];
-  const own: Record<string, unknown> = {};
-  if (height.lengthsOff.length) own.lengthsOff = height.lengthsOff;
-  if (height.combosOff.length) own.combosOff = height.combosOff;
-  const itemNumbers = Object.fromEntries(
-    Object.entries(height.itemNumbers)
-      .map(([key, value]) => [key, value.trim()] as const)
-      .filter(([, value]) => value),
-  );
-  if (Object.keys(itemNumbers).length) own.itemNumbers = itemNumbers;
-  if (Object.keys(own).length) map[label.toLowerCase()] = own;
-  return writeDrawerHeightDetailsMap(writeDrawerField(item, "backHeights", nextHeights), map);
+  return writeDrawerHeightDetails(writeDrawerHeightDetailsMap(writeDrawerField(item, "backHeights", nextHeights), map), label, height);
+}
+
+// A height's codes at one length, in words — its chip's tooltip in the grid of lengths, a line each.
+function describeDrawerLengthCodes(item: Record<string, unknown>, label: string, length: string): string {
+  const details = readDrawerHeightDetails(item, label);
+  if (details.lengthsOff.includes(length)) return `${label} doesn't come in ${length}mm — click to change`;
+  const weights = readDrawerWeights(item);
+  const pushToOpen = readDrawerPushToOpen(item);
+  const code = (key: string) => details.itemNumbers[key] || "no code";
+  const lines = [`${label} · ${length}mm: ${code(length)}`];
+  if (weights.length) {
+    for (const weight of weights) {
+      if (details.combosOff.includes(drawerComboKey(length, weight))) continue;
+      lines.push(`${weight}kg: ${code(drawerComboKey(length, weight))}`);
+      if (pushToOpen && !details.combosOff.includes(drawerPushKey(length, weight))) lines.push(`${weight}kg push to open: ${code(drawerPushKey(length, weight))}`);
+    }
+  } else if (pushToOpen && !details.combosOff.includes(drawerPushKey(length, null))) {
+    lines.push(`Push to open: ${code(drawerPushKey(length, null))}`);
+  }
+  return `${lines.join("\n")}\nClick to change`;
 }
 
 // A drawer type's default weight ("" — none chosen): its drawers' weight, at every height and length that comes in it.
@@ -1768,9 +1816,9 @@ function renameDrawerDefaultWeight(item: Record<string, unknown>, kind: "length"
 // Undoing a length, weight or height taken off: the drawer's lengths, weights (and its default), heights and their
 // details back as they were (`before`) — the rest of it (its name, cutting, depth requirement) as it is now.
 function restoreDrawerOptions(item: Record<string, unknown>, before: Record<string, unknown>): Record<string, unknown> {
-  const next: Record<string, unknown> = writeDrawerDefaultWeight(
-    { ...item, hardwareLengths: readDrawerLengths(before), hardwareWeights: readDrawerWeights(before) },
-    readDrawerDefaultWeight(before),
+  const next: Record<string, unknown> = writeDrawerPushToOpen(
+    writeDrawerDefaultWeight({ ...item, hardwareLengths: readDrawerLengths(before), hardwareWeights: readDrawerWeights(before) }, readDrawerDefaultWeight(before)),
+    readDrawerPushToOpen(before),
   );
   const backs = item.backs && typeof item.backs === "object" ? { ...(item.backs as Record<string, unknown>) } : {};
   backs.heights = readDrawerBackHeights(before);
@@ -1809,24 +1857,28 @@ function renameDrawerHeightOption(item: Record<string, unknown>, kind: "length" 
       const lengthsOff = list("lengthsOff");
       put("lengthsOff", now ? lengthsOff.map((v) => (v === was ? now : v)) : lengthsOff.filter((v) => v !== was));
     }
-    // (Its ID numbers, too — "500", "500|65".)
+    // (A key with it in — "500", "500|65", "500|65|Push to open" — renamed in place, the rest of it kept; null: it's gone.)
+    const remap = (key: string): string | null => {
+      const parts = key.split("|");
+      const at = kind === "length" ? 0 : 1;
+      if (parts[at] !== was) return key;
+      if (!now) return null;
+      parts[at] = now;
+      return parts.join("|");
+    };
+    // (Its ID numbers, too.)
     if (row.itemNumbers && typeof row.itemNumbers === "object") {
       const itemNumbers: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(row.itemNumbers as Record<string, unknown>)) {
-        const [length = "", weight] = key.split("|");
-        const hit = kind === "length" ? length === was : weight === was;
-        if (!hit) itemNumbers[key] = value;
-        else if (now) itemNumbers[kind === "length" ? (weight == null ? now : drawerComboKey(now, weight)) : drawerComboKey(length, now)] = value;
+        const nextKey = remap(key);
+        if (nextKey) itemNumbers[nextKey] = value;
       }
       if (Object.keys(itemNumbers).length) row.itemNumbers = itemNumbers;
       else delete row.itemNumbers;
     }
     const combos = list("combosOff").flatMap((combo) => {
-      const [length = "", weight = ""] = combo.split("|");
-      const hit = kind === "length" ? length === was : weight === was;
-      if (!hit) return [combo];
-      if (!now) return [];
-      return [kind === "length" ? drawerComboKey(now, weight) : drawerComboKey(length, now)];
+      const nextKey = remap(combo);
+      return nextKey ? [nextKey] : [];
     });
     put("combosOff", combos);
     if (Object.keys(row).length) map[label] = row;
@@ -1835,16 +1887,12 @@ function renameDrawerHeightOption(item: Record<string, unknown>, kind: "length" 
   return writeDrawerHeightDetailsMap(item, map);
 }
 
-// A drawer type's height, in a small pop-up under its chip: its name and back height, then the drawer type's runner
-// lengths down the side and its weights across the top — a length switched off: the height doesn't come in it; a weight
-// under a length switched off: that length doesn't come in that weight for this height (Blum's M: 350–450 in 30 kg only,
-// 500 and 550 in 30 or 65) — each weight's tick with its supplier's ID number beside it (no weights: each length's). An
-// existing height is saved as it's changed (whenever it has a name of its own); a new one — the same pop-up, empty — when
-// Add height is pressed.
+// A drawer type's height, in a small pop-up under its chip: its name and back height. (Which lengths it comes in, and its
+// codes at each, are set in the grid of lengths under it.) An existing height is saved as it's changed (whenever it has a
+// name of its own); a new one — the same pop-up, empty — when Add height is pressed.
 function DrawerHeightEditor({
   drawer,
   heightIndex,
-  color,
   left,
   onCommit,
   onRemove,
@@ -1853,7 +1901,6 @@ function DrawerHeightEditor({
   drawer: Record<string, unknown>;
   // Which of its heights (readDrawerBackHeights); null — a new one.
   heightIndex: number | null;
-  color: string;
   // How far along the Heights row it opens (under the chip pressed).
   left: number;
   onCommit: (height: DrawerHeightDraft) => void;
@@ -1862,8 +1909,7 @@ function DrawerHeightEditor({
 }) {
   const heights = readDrawerBackHeights(drawer);
   const existing = heightIndex != null ? (heights[heightIndex] ?? null) : null;
-  const lengths = readDrawerLengths(drawer);
-  const weights = readDrawerWeights(drawer);
+  // (Its details come along unchanged — renaming it moves them with it.)
   const [draft, setDraft] = useState<DrawerHeightDraft>(() =>
     existing != null
       ? { label: readDrawerHeightLabel(existing), size: readDrawerHeightNumber(existing), ...readDrawerHeightDetails(drawer, readDrawerHeightLabel(existing)) }
@@ -1878,10 +1924,8 @@ function DrawerHeightEditor({
     setDraft(next);
     if (existing != null && next.label.trim() && !isTaken(next.label)) onCommit(next);
   };
-  const toggleIn = (list: string[], value: string) => (list.includes(value) ? list.filter((v) => v !== value) : [...list, value]);
-  const onColor = textColorForHex(color);
   // Under its row — or over it, when under would run off the bottom of the screen and there's more room above. (Placed
-  // straight onto it before it's painted, measured under first.)
+  // straight onto it before it's painted.)
   const panelRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     const panel = panelRef.current;
@@ -1889,74 +1933,12 @@ function DrawerHeightEditor({
     if (!panel || !row) return;
     Object.assign(panel.style, { top: "100%", bottom: "auto", marginTop: "6px", marginBottom: "0px", transformOrigin: "50% 0%" });
     const rowRect = row.getBoundingClientRect();
-    const roomBelow = window.innerHeight - rowRect.bottom;
-    if (roomBelow < panel.offsetHeight + 16 && rowRect.top > roomBelow) {
+    const roomBelow = window.innerHeight - rowRect.bottom - 16;
+    const roomAbove = rowRect.top - 16;
+    if (panel.offsetHeight > roomBelow && roomAbove > roomBelow) {
       Object.assign(panel.style, { top: "auto", bottom: "100%", marginTop: "0px", marginBottom: "6px", transformOrigin: "50% 100%" });
     }
-  }, [lengths.length, weights.length]);
-  // A length it comes in (on: the brand's colour, ticked) — or doesn't (off: struck through).
-  const lengthChip = (length: string) => {
-    const on = !draft.lengthsOff.includes(length);
-    return (
-      <button
-        key={`length_${length}`}
-        type="button"
-        onClick={() => change({ lengthsOff: toggleIn(draft.lengthsOff, length) })}
-        aria-pressed={on}
-        className={`glass-shine inline-flex h-7 items-center justify-center gap-1 rounded-full border px-2.5 text-[12px] font-medium transition hover:brightness-95 ${on ? "" : "glass-shine-neutral line-through"}`}
-        style={on ? glassShineStyle(color, { color: onColor }) : { color: "var(--text-muted)" }}
-        title={on ? `Comes in ${length}mm — click to switch it off` : `Doesn't come in ${length}mm — click to switch it on`}
-      >
-        {on ? <Check size={12} strokeWidth={2.6} /> : null}
-        {length}mm
-      </button>
-    );
-  };
-  // Whether a length it comes in comes in a weight: a round tick (none for a length it doesn't come in).
-  const weightCell = (length: string, weight: string) => {
-    const lengthOn = !draft.lengthsOff.includes(length);
-    const key = drawerComboKey(length, weight);
-    const on = lengthOn && !draft.combosOff.includes(key);
-    return (
-      <span key={key} className="flex justify-center">
-        <button
-          type="button"
-          disabled={!lengthOn}
-          onClick={() => change({ combosOff: toggleIn(draft.combosOff, key) })}
-          aria-pressed={on}
-          aria-label={`${length}mm in ${weight}kg`}
-          className={`glass-shine inline-flex h-7 w-7 items-center justify-center rounded-full border transition hover:brightness-95 disabled:cursor-default disabled:opacity-35 ${on ? "" : "glass-shine-neutral"}`}
-          style={on ? glassShineStyle(color, { color: onColor }) : { color: "var(--text-muted)" }}
-          title={
-            !lengthOn
-              ? `Switch ${length}mm on first`
-              : on
-                ? `${length}mm comes in ${weight}kg — click to switch it off`
-                : `${length}mm doesn't come in ${weight}kg — click to switch it on`
-          }
-        >
-          {on ? <Check size={13} strokeWidth={2.6} /> : null}
-        </button>
-      </span>
-    );
-  };
-  // An ID number for this height (copied from a project's order, to find it in the supplier's cart): a length's, at a
-  // weight — or the length's own, with no weights. None for what it doesn't come in (its space kept, so the rows line up).
-  const idField = (length: string, weight?: string) => {
-    const key = weight != null ? drawerComboKey(length, weight) : length;
-    const off = draft.lengthsOff.includes(length) || (weight != null && draft.combosOff.includes(key));
-    if (off) return <span key={`id_${key}`} aria-hidden />;
-    return (
-      <input
-        key={`id_${key}`}
-        value={draft.itemNumbers[key] ?? ""}
-        onChange={(e) => change({ itemNumbers: { ...draft.itemNumbers, [key]: e.target.value } })}
-        placeholder="ID number"
-        aria-label={weight != null ? `${length}mm ${weight}kg ID number` : `${length}mm ID number`}
-        className={glassFieldSmClass}
-      />
-    );
-  };
+  }, []);
   const submit = () => {
     if (existing == null) {
       if (!valid) return;
@@ -1970,7 +1952,7 @@ function DrawerHeightEditor({
       data-drawer-height-editor="true"
       role="dialog"
       aria-label={existing == null ? "New height" : `Height ${draft.label}`}
-      className="glass-menu-squeeze absolute z-40 w-[480px] max-w-[calc(100vw-48px)] space-y-3 rounded-[14px] border p-3 shadow-[0_12px_30px_rgba(15,23,42,0.14)]"
+      className="glass-menu-squeeze absolute z-40 w-[300px] max-w-[calc(100vw-16px)] space-y-3 rounded-[14px] border p-3 shadow-[0_12px_30px_rgba(15,23,42,0.14)]"
       style={{
         left,
         borderColor: "var(--glass-border)",
@@ -2019,43 +2001,6 @@ function DrawerHeightEditor({
           This drawer already has a {draft.label.trim()} height.
         </p>
       ) : null}
-      <div className="space-y-1.5">
-        <p className="text-[11.5px] font-medium text-[var(--text-main)]">{weights.length ? "Lengths and weights it comes in" : "Lengths it comes in"}</p>
-        {!lengths.length ? (
-          <span className="text-[11.5px] text-[var(--text-muted)]">Add the drawer&apos;s hardware lengths first.</span>
-        ) : (
-          <div
-            className="grid items-center gap-x-2 gap-y-1.5"
-            style={{
-              gridTemplateColumns: weights.length ? `auto ${weights.map(() => "28px minmax(0, 1fr)").join(" ")}` : "auto minmax(0, 1fr)",
-            }}
-          >
-            <span />
-            {weights.length ? (
-              weights.map((weight) => (
-                <span key={`weight_${weight}`} className="col-span-2 pl-1 text-[11.5px] font-medium text-[var(--text-main)]">
-                  {weight}kg
-                </span>
-              ))
-            ) : (
-              <span className="text-[11.5px] font-medium text-[var(--text-main)]">ID number</span>
-            )}
-            {lengths.map((length) => (
-              <Fragment key={`row_${length}`}>
-                {lengthChip(length)}
-                {weights.length
-                  ? weights.map((weight) => (
-                      <Fragment key={`cell_${length}_${weight}`}>
-                        {weightCell(length, weight)}
-                        {idField(length, weight)}
-                      </Fragment>
-                    ))
-                  : idField(length)}
-              </Fragment>
-            ))}
-          </div>
-        )}
-      </div>
       <div className="flex items-center justify-between gap-2 pt-0.5">
         {existing != null ? (
           <button
@@ -2087,6 +2032,206 @@ function DrawerHeightEditor({
         </button>
       </div>
     </div>
+  );
+}
+
+// Every dropdown's open panel in the app (the edge tape list's look).
+const DRAWER_CODE_MENU_STYLE = {
+  borderColor: "var(--glass-border)",
+  backgroundColor: "var(--glass-modal-bg)",
+  backdropFilter: "blur(12px) saturate(220%)",
+  WebkitBackdropFilter: "blur(12px) saturate(220%)",
+  boxShadow: "inset 0 0 0 999px color-mix(in srgb, var(--panel-bg) 22%, transparent), var(--shadow-glass)",
+} as const;
+
+// One height's codes at one runner length — a small drop-down under its chip in the grid of lengths (or over it, with no
+// room under), floating over the page like every dropdown. Its top: a switch for whether the height comes in that length,
+// and the length's own code (any weight below without one of its own uses it). Then each weight's code — the drawer
+// type's weights, each switched off where it doesn't come in it — and, a drawer type in push to open, that weight's Push to
+// open code (switched off where it doesn't come in push to open). A project's order goes down that path — length, height,
+// weight, push to open — and stops at the code its drawer needs. Saved as it's typed.
+function DrawerCodeMenu({
+  drawer,
+  label,
+  length,
+  anchor,
+  onCommit,
+  onClose,
+}: {
+  drawer: Record<string, unknown>;
+  // The height's letter ("M").
+  label: string;
+  length: string;
+  // The chip it opened from (it stays against it as the page scrolls).
+  anchor: HTMLElement;
+  onCommit: (details: DrawerHeightDetails) => void;
+  onClose: () => void;
+}) {
+  const weights = readDrawerWeights(drawer);
+  const pushToOpen = readDrawerPushToOpen(drawer);
+  const [draft, setDraft] = useState<DrawerHeightDetails>(() => readDrawerHeightDetails(drawer, label));
+  const change = (patch: Partial<DrawerHeightDetails>) => {
+    const next = { ...draft, ...patch };
+    setDraft(next);
+    onCommit(next);
+  };
+  const toggleIn = (list: string[], value: string) => (list.includes(value) ? list.filter((v) => v !== value) : [...list, value]);
+  const lengthOn = !draft.lengthsOff.includes(length);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  // Under its chip (from its left) — or over it, when only there has room — kept on the screen, its codes no taller than
+  // the room it has (scrolling past that). Again as the page scrolls or the window changes size, and as rows come and go.
+  const placeRef = useRef<() => void>(() => {});
+  useLayoutEffect(() => {
+    placeRef.current = () => {
+      const el = menuRef.current;
+      if (!el) return;
+      if (!anchor.isConnected) {
+        onCloseRef.current();
+        return;
+      }
+      const edge = 8;
+      const gap = 6;
+      const body = bodyRef.current;
+      if (body) body.style.maxHeight = "none";
+      const rect = anchor.getBoundingClientRect();
+      const w = el.offsetWidth;
+      let h = el.offsetHeight;
+      const roomBelow = window.innerHeight - rect.bottom - gap - edge;
+      const roomAbove = rect.top - gap - edge;
+      const above = h > roomBelow && roomAbove > roomBelow;
+      const room = above ? roomAbove : roomBelow;
+      if (body && h > room) {
+        body.style.maxHeight = `${Math.max(96, Math.floor(room - (h - body.offsetHeight)))}px`;
+        h = el.offsetHeight;
+      }
+      el.style.left = `${Math.round(Math.min(window.innerWidth - w - edge, Math.max(edge, rect.left)))}px`;
+      el.style.top = `${Math.round(above ? rect.top - gap - h : rect.bottom + gap)}px`;
+      el.style.transformOrigin = above ? "0% 100%" : "0% 0%";
+      el.style.visibility = "visible";
+    };
+  });
+  useLayoutEffect(() => {
+    placeRef.current();
+  }, [lengthOn, weights.length, pushToOpen, draft.combosOff.length]);
+  useEffect(() => {
+    const onMove = () => placeRef.current();
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
+    return () => {
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onMove);
+    };
+  }, []);
+  // A press anywhere else closes it (a chip in the grid moves it, or shuts it); so does Escape.
+  useEffect(() => {
+    const onDown = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (target && menuRef.current?.contains(target)) return;
+      if (target?.closest?.("[data-drawer-code-chip]")) return;
+      onCloseRef.current();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      onCloseRef.current();
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, []);
+  // A code — copied from a project's order, to find the drawer in the supplier's cart — by its key.
+  const codeField = (key: string, aria: string, title?: string) => (
+    <input
+      value={draft.itemNumbers[key] ?? ""}
+      onChange={(e) => change({ itemNumbers: { ...draft.itemNumbers, [key]: e.target.value } })}
+      placeholder="Code"
+      aria-label={aria}
+      title={title}
+      className={glassFieldSmClass}
+    />
+  );
+  // A switch and its name (struck through, switched off).
+  const toggle = (on: boolean, flip: () => void, text: string, aria: string) => (
+    <span className="flex min-w-0 items-center gap-1.5">
+      <GlassSwitch size="sm" checked={on} onChange={flip} ariaLabel={aria} />
+      <span className={`truncate text-[12px] font-medium ${on ? "text-[var(--text-main)]" : "text-[var(--text-muted)] line-through"}`}>{text}</span>
+    </span>
+  );
+  const rowClass = "grid min-h-8 grid-cols-[126px_minmax(0,1fr)] items-center gap-2";
+  // A Push to open line — its switch, and its code where it comes in it.
+  const pushRow = (weight: string | null) => {
+    const key = drawerPushKey(length, weight);
+    const on = !draft.combosOff.includes(key);
+    const where = `${label} ${length}mm${weight ? ` ${weight}kg` : ""}`;
+    return (
+      <div className={rowClass}>
+        {toggle(on, () => change({ combosOff: toggleIn(draft.combosOff, key) }), "Push to open", `${where} comes in push to open`)}
+        {on ? codeField(key, `${where} push to open code`) : <span />}
+      </div>
+    );
+  };
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      ref={menuRef}
+      role="dialog"
+      aria-label={`${label} at ${length}mm`}
+      data-drawer-code-menu="true"
+      className="glass-menu-squeeze fixed left-0 top-0 flex w-[316px] max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-[10px] border"
+      style={{ visibility: "hidden", zIndex: 2147483000, ...DRAWER_CODE_MENU_STYLE }}
+    >
+      {/* (Its top: whether it comes in this length — the switch — and, where it does, the length's own code, lined up with
+          the weights' codes under it.) */}
+      <div
+        className={`${rowClass} shrink-0 px-[15px] py-2 ${lengthOn && (weights.length || pushToOpen) ? "border-b" : ""}`}
+        style={{ borderColor: "var(--glass-border)" }}
+      >
+        <span className="flex min-w-0 items-center gap-1.5">
+          <GlassSwitch
+            size="sm"
+            checked={lengthOn}
+            onChange={() => change({ lengthsOff: toggleIn(draft.lengthsOff, length) })}
+            ariaLabel={`${label} comes in ${length}mm`}
+            title={lengthOn ? `Comes in ${length}mm — switch off if ${label} doesn't` : `Doesn't come in ${length}mm — switch on if ${label} does`}
+          />
+          <span className={`truncate text-[13px] font-medium ${lengthOn ? "text-[var(--text-main)]" : "text-[var(--text-muted)]"}`}>
+            {label} · {length}mm
+          </span>
+        </span>
+        {lengthOn ? (
+          codeField(length, `${label} ${length}mm code`, weights.length ? "Used for any weight below without a code of its own" : undefined)
+        ) : (
+          <span className="truncate text-[12px] font-medium text-[var(--text-muted)]">Doesn&apos;t come in {length}mm</span>
+        )}
+      </div>
+      {lengthOn && (weights.length || pushToOpen) ? (
+        <div ref={bodyRef} className="glass-scroll min-h-0 space-y-1.5 overflow-y-auto p-2">
+          {!weights.length && pushToOpen ? <div className="px-[7px]">{pushRow(null)}</div> : null}
+          {weights.map((weight) => {
+            const key = drawerComboKey(length, weight);
+            const on = !draft.combosOff.includes(key);
+            return (
+              <div key={`w_${weight}`} className="space-y-1 rounded-[8px] border px-1.5 py-1" style={{ borderColor: "var(--glass-border)" }}>
+                <div className={rowClass}>
+                  {toggle(on, () => change({ combosOff: toggleIn(draft.combosOff, key) }), `${weight}kg`, `${label} ${length}mm comes in ${weight}kg`)}
+                  {on ? codeField(key, `${label} ${length}mm ${weight}kg code`) : <span />}
+                </div>
+                {on && pushToOpen ? pushRow(weight) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>,
+    document.body,
   );
 }
 
@@ -2429,6 +2574,9 @@ export default function CompanySettingsPage() {
   // The drawer height pop-up (a drawer type's Heights): which brand, drawer and height (null — a new one), and how far
   // along its row it opens. Closes on a press outside it (or its chips, which move it), or Escape.
   const [drawerHeightEditor, setDrawerHeightEditor] = useState<{ hardwareIdx: number; drawerIdx: number; heightIdx: number | null; left: number } | null>(null);
+  // A height's codes at a length (a chip in a drawer type's grid of lengths): which brand, drawer, length and height, and the
+  // chip it opened from. (It closes itself.)
+  const [drawerCodeMenu, setDrawerCodeMenu] = useState<{ hardwareIdx: number; drawerIdx: number; lengthIdx: number; heightIdx: number; anchor: HTMLElement } | null>(null);
   useEffect(() => {
     if (!drawerHeightEditor) return;
     const onPress = (e: PointerEvent) => {
@@ -10535,26 +10683,32 @@ export default function CompanySettingsPage() {
                                                   />
                                                   <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-[var(--text-muted)]">{unit}</span>
                                                 </span>
-                                                {/* A weight: the drawer type's default — every height and length's, where it comes in it. */}
+                                                {/* A weight: the drawer type's default — every height and length's, where it comes in it. A switch;
+                                                    once one weight is the default, the others' switches go (switch it off to pick another). */}
                                                 {kind === "weight" ? (
                                                   (() => {
-                                                    const isDefault = readDrawerDefaultWeight(drawer) === value.trim();
+                                                    const defaultWeight = readDrawerDefaultWeight(drawer);
+                                                    const isDefault = defaultWeight === value.trim();
+                                                    if (!isDefault && defaultWeight && values.some((v) => v.trim() === defaultWeight)) return null;
+                                                    const flip = () => updateDrawer((item) => writeDrawerDefaultWeight(item, isDefault ? "" : value));
                                                     return (
-                                                      <button
-                                                        type="button"
-                                                        onClick={() => updateDrawer((item) => writeDrawerDefaultWeight(item, isDefault ? "" : value))}
-                                                        className="ml-1 inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] font-semibold"
-                                                        style={{ color: isDefault ? "var(--brand-strong)" : "var(--text-muted)" }}
-                                                        title={isDefault ? `${value}kg is the default — click to clear` : `Make ${value}kg the default weight`}
-                                                      >
-                                                        <span
-                                                          className="inline-flex h-4 w-4 items-center justify-center rounded-full border-[1.5px]"
-                                                          style={{ borderColor: isDefault ? "var(--brand)" : "color-mix(in srgb, var(--text-main) 25%, transparent)" }}
+                                                      <span className="ml-1 inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+                                                        <GlassSwitch
+                                                          size="sm"
+                                                          checked={isDefault}
+                                                          onChange={flip}
+                                                          ariaLabel={`${value}kg is the default weight`}
+                                                          title={isDefault ? `${value}kg is the default — switch off to clear` : `Make ${value}kg the default weight`}
+                                                        />
+                                                        <button
+                                                          type="button"
+                                                          onClick={flip}
+                                                          className="text-[11.5px] font-medium"
+                                                          style={{ color: isDefault ? "var(--text-main)" : "var(--text-muted)" }}
                                                         >
-                                                          {isDefault ? <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "var(--brand)" }} /> : null}
-                                                        </span>
-                                                        Default
-                                                      </button>
+                                                          Default
+                                                        </button>
+                                                      </span>
                                                     );
                                                   })()
                                                 ) : null}
@@ -10618,13 +10772,32 @@ export default function CompanySettingsPage() {
                                         const rowEl = e.currentTarget.closest("[data-drawer-heights-row]");
                                         const rowRect = rowEl?.getBoundingClientRect();
                                         const chipLeft = e.currentTarget.getBoundingClientRect().left - (rowRect?.left ?? 0);
-                                        const left = Math.max(0, Math.min(chipLeft, (rowRect?.width ?? 480) - 480));
+                                        // (Kept on the screen — a phone's row is narrower than it.)
+                                        const rowLeft = rowRect?.left ?? 0;
+                                        const width = Math.min(300, window.innerWidth - 16);
+                                        const left = Math.max(8 - rowLeft, Math.min(chipLeft, window.innerWidth - 8 - rowLeft - width));
+                                        setDrawerCodeMenu(null);
                                         setDrawerHeightEditor({ hardwareIdx: idx, drawerIdx, heightIdx, left });
                                       };
+                                      const lengthRows = readDrawerLengths(drawer);
+                                      const codeMenuHere =
+                                        drawerCodeMenu && drawerCodeMenu.hardwareIdx === idx && drawerCodeMenu.drawerIdx === drawerIdx ? drawerCodeMenu : null;
+                                      const brandColor = row.color || "#7D99B3";
+                                      const brandText = textColorForHex(brandColor);
                                       return (
                                         <div className="space-y-2.5 px-2 pb-1.5 pl-9 max-sm:pl-2">
-                                          {optionList("Hardware lengths", "hardwareLengths", "length", "mm", "Hardware length", "e.g. 500")}
                                           {optionList("Hardware weights", "hardwareWeights", "weight", "kg", "Hardware weight", "e.g. 65")}
+                                          {/* (Whether it comes in push to open: each weight's codes in the grid then have a Push to open one too,
+                                              and its drawers can each be marked push to open in the cutlist.) */}
+                                          <div className="flex flex-wrap items-center gap-2 text-[12px]">
+                                            <p className="w-[120px] font-semibold text-[var(--text-main)]">Push to open</p>
+                                            <GlassSwitch
+                                              size="sm"
+                                              checked={readDrawerPushToOpen(drawer)}
+                                              onChange={(next) => updateDrawer((item) => writeDrawerPushToOpen(item, next))}
+                                              ariaLabel="Comes in push to open"
+                                            />
+                                          </div>
                                           <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[12px]">
                                             <p className="w-[120px] font-semibold text-[var(--text-main)]">Cutting</p>
                                             <span className="font-medium text-[var(--text-main)]">Bottoms</span>
@@ -10671,7 +10844,6 @@ export default function CompanySettingsPage() {
                                                 key={`${idx}:${drawerIdx}:${editorHere.heightIdx ?? "new"}`}
                                                 drawer={drawer}
                                                 heightIndex={editorHere.heightIdx}
-                                                color={row.color || "#7D99B3"}
                                                 left={editorHere.left}
                                                 onCommit={(height) => updateDrawer((item) => writeDrawerHeight(item, editorHere.heightIdx, height))}
                                                 onRemove={() => {
@@ -10686,6 +10858,126 @@ export default function CompanySettingsPage() {
                                               />
                                             ) : null}
                                           </div>
+                                          {/* The grid of lengths: each runner length (changed in place, X to take it off), and a chip for each
+                                              height — struck through where it doesn't come in that length — opening its codes there. */}
+                                          <div className="max-w-[640px] overflow-hidden rounded-[10px] border text-[12px]" style={{ borderColor: "var(--glass-border)" }}>
+                                            <div
+                                              className="grid grid-cols-[150px_minmax(0,1fr)] border-b font-semibold text-[var(--text-main)]"
+                                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--list-head-bg, color-mix(in srgb, var(--text-main) 5%, transparent))" }}
+                                            >
+                                              <p className="px-3 py-1.5">Hardware length</p>
+                                              <p className="border-l px-3 py-1.5" style={{ borderColor: "var(--glass-border)" }}>
+                                                Back height
+                                              </p>
+                                            </div>
+                                            {lengthRows.map((length, lIdx) => (
+                                              <div
+                                                key={`${drawerIdx}_length_${lIdx}`}
+                                                className="grid grid-cols-[150px_minmax(0,1fr)] border-b"
+                                                style={{ borderColor: "var(--glass-border)" }}
+                                              >
+                                                <div className="flex items-center gap-1 px-2 py-1.5">
+                                                  <span className="relative block w-[96px]">
+                                                    <input
+                                                      inputMode="decimal"
+                                                      value={length}
+                                                      onChange={(e) => {
+                                                        const nextValue = e.target.value;
+                                                        updateDrawer((item) =>
+                                                          renameDrawerHeightOption(
+                                                            writeDrawerField(item, "hardwareLengths", lengthRows.map((v, j) => (j === lIdx ? nextValue : v))),
+                                                            "length",
+                                                            length,
+                                                            nextValue.trim() || null,
+                                                          ),
+                                                        );
+                                                      }}
+                                                      aria-label={`Hardware length ${length}`}
+                                                      className={glassFieldSmClass}
+                                                      style={{ paddingRight: 30 }}
+                                                    />
+                                                    <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-[var(--text-muted)]">mm</span>
+                                                  </span>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                      removeWithUndo(`${length}mm removed`, (item) =>
+                                                        renameDrawerHeightOption(writeDrawerField(item, "hardwareLengths", lengthRows.filter((_, j) => j !== lIdx)), "length", length, null),
+                                                      )
+                                                    }
+                                                    className={dangerIconButtonClass}
+                                                    title={`Remove ${length}mm`}
+                                                  >
+                                                    <X size={13} />
+                                                  </button>
+                                                </div>
+                                                <div className="flex flex-wrap items-center gap-1.5 border-l px-3 py-1.5" style={{ borderColor: "var(--glass-border)" }}>
+                                                  {heightRows.length ? (
+                                                    heightRows.map((height, hIdx) => {
+                                                      const heightLabel = readDrawerHeightLabel(height);
+                                                      const on = !readDrawerHeightDetails(drawer, heightLabel).lengthsOff.includes(length);
+                                                      const open = codeMenuHere?.lengthIdx === lIdx && codeMenuHere.heightIdx === hIdx;
+                                                      return (
+                                                        <button
+                                                          key={`${drawerIdx}_code_${lIdx}_${hIdx}`}
+                                                          type="button"
+                                                          data-drawer-code-chip="true"
+                                                          onClick={(e) => {
+                                                            setDrawerHeightEditor(null);
+                                                            if (open) {
+                                                              setDrawerCodeMenu(null);
+                                                              return;
+                                                            }
+                                                            setDrawerCodeMenu({ hardwareIdx: idx, drawerIdx, lengthIdx: lIdx, heightIdx: hIdx, anchor: e.currentTarget });
+                                                          }}
+                                                          aria-pressed={open}
+                                                          aria-label={`${heightLabel} at ${length}mm`}
+                                                          className={`glass-shine inline-flex h-7 min-w-[32px] items-center justify-center rounded-full border px-2 text-[12px] font-semibold transition hover:brightness-95 ${on ? "" : "glass-shine-neutral line-through"}`}
+                                                          style={{
+                                                            ...(on ? glassShineStyle(brandColor, { color: brandText }) : { color: "var(--text-muted)" }),
+                                                            ...(open ? { outline: "2px solid var(--brand)", outlineOffset: 1 } : null),
+                                                          }}
+                                                          title={describeDrawerLengthCodes(drawer, heightLabel, length)}
+                                                        >
+                                                          {heightLabel}
+                                                        </button>
+                                                      );
+                                                    })
+                                                  ) : (
+                                                    <span className="text-[11.5px] font-medium text-[var(--text-muted)]">Add a height above first</span>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            ))}
+                                            <button
+                                              type="button"
+                                              onClick={async () => {
+                                                const next = await ask.prompt({ title: "Add hardware length", label: "Hardware length", placeholder: "e.g. 500", inputMode: "decimal" });
+                                                const value = toStr(next);
+                                                if (!value) return;
+                                                updateDrawer((item) => writeDrawerField(item, "hardwareLengths", [...readDrawerLengths(item), value]));
+                                              }}
+                                              className="flex w-full items-center gap-1.5 px-3 py-2 text-[12px] font-semibold text-[var(--brand-strong)] transition hover:bg-[var(--brand-soft)]"
+                                            >
+                                              <Plus size={14} /> Add length
+                                            </button>
+                                          </div>
+                                          {codeMenuHere && lengthRows[codeMenuHere.lengthIdx] != null && heightRows[codeMenuHere.heightIdx] != null ? (
+                                            (() => {
+                                              const menuLabel = readDrawerHeightLabel(heightRows[codeMenuHere.heightIdx]);
+                                              return (
+                                                <DrawerCodeMenu
+                                                  key={`${idx}:${drawerIdx}:${codeMenuHere.lengthIdx}:${codeMenuHere.heightIdx}`}
+                                                  drawer={drawer}
+                                                  label={menuLabel}
+                                                  length={lengthRows[codeMenuHere.lengthIdx]}
+                                                  anchor={codeMenuHere.anchor}
+                                                  onCommit={(details) => updateDrawer((item) => writeDrawerHeightDetails(item, menuLabel, details))}
+                                                  onClose={() => setDrawerCodeMenu(null)}
+                                                />
+                                              );
+                                            })()
+                                          ) : null}
                                         </div>
                                       );
                                     })()}

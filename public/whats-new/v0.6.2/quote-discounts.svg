@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>Request Discount on a quote asks for 10% off; whoever answers discounts gets the request and accepts it, and the quote's discount, GST and total update</title>
+  <style>
+    .show { animation: show 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes show { 0%, 2% { opacity: 0; transform: translateY(10px); } 7%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .cur { animation: cur 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes cur { 0%, 4% { opacity: 0; transform: translate(260px, 340px); } 6% { opacity: 1; transform: translate(260px, 340px); } 10%, 13% { opacity: 1; transform: translate(112px, 300px); } 28%, 34% { opacity: 1; transform: translate(478px, 156px); } 56%, 62% { opacity: 1; transform: translate(398px, 304px); } 70% { opacity: 1; transform: translate(430px, 340px); } 74%, 100% { opacity: 0; transform: translate(430px, 340px); } }
+    .rip1 { animation: rip1 8s ease-out infinite both; }
+    @keyframes rip1 { 0%, 11% { opacity: 0; } 12% { opacity: .55; } 17%, 100% { opacity: 0; } }
+    .rip2 { animation: rip2 8s ease-out infinite both; }
+    @keyframes rip2 { 0%, 32% { opacity: 0; } 33% { opacity: .55; } 38%, 100% { opacity: 0; } }
+    .rip3 { animation: rip3 8s ease-out infinite both; }
+    @keyframes rip3 { 0%, 60% { opacity: 0; } 61% { opacity: .55; } 66%, 100% { opacity: 0; } }
+    .req { animation: req 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes req { 0%, 13% { opacity: 0; transform: translateY(10px); } 18%, 36% { opacity: 1; transform: translateY(0); } 40%, 100% { opacity: 0; transform: translateY(0); } }
+    .note { animation: note 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes note { 0%, 40% { opacity: 0; transform: translateY(10px); } 45%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .btns { animation: btns 8s ease infinite both; }
+    @keyframes btns { 0%, 40% { opacity: 0; } 45%, 63% { opacity: 1; } 66%, 100% { opacity: 0; } }
+    .ok { animation: ok 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes ok { 0%, 64% { opacity: 0; transform: translateY(4px); } 68%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .push { animation: push 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes push { 0%, 68% { transform: translateY(0); } 73%, 100% { transform: translateY(24px); } }
+    .disc { animation: disc 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes disc { 0%, 70% { opacity: 0; transform: translateY(4px); } 75%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .old { animation: old 8s ease infinite both; }
+    @keyframes old { 0%, 2% { opacity: 0; } 7%, 71% { opacity: 1; } 74%, 100% { opacity: 0; } }
+    .new { animation: new 8s ease infinite both; }
+    @keyframes new { 0%, 72% { opacity: 0; } 76%, 92% { opacity: 1; } 96%, 100% { opacity: 0; } }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <filter id="pop" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0F172A" flood-opacity=".14"/>
+    </filter>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <g class="show">
+    <rect x="24" y="24" width="300" height="312" rx="16" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+    <text x="44" y="50" font-size="12.5" font-weight="600" fill="#0F172A">Quote</text>
+    <text x="88" y="50" font-size="11.5" font-weight="500" fill="#64748B">Smith Kitchen</text>
+    <line x1="44" y1="62" x2="304" y2="62" stroke="#E2E8F0"/>
+    <text x="44" y="86" font-size="11.5" font-weight="500" fill="#334155">Cabinetry</text><text x="304" y="86" text-anchor="end" font-size="11.5" font-weight="500" fill="#334155">$18,400</text>
+    <text x="44" y="110" font-size="11.5" font-weight="500" fill="#334155">Benchtops</text><text x="304" y="110" text-anchor="end" font-size="11.5" font-weight="500" fill="#334155">$4,900</text>
+    <text x="44" y="134" font-size="11.5" font-weight="500" fill="#334155">Installation</text><text x="304" y="134" text-anchor="end" font-size="11.5" font-weight="500" fill="#334155">$1,500</text>
+    <line x1="44" y1="148" x2="304" y2="148" stroke="#E2E8F0"/>
+    <text x="44" y="170" font-size="11.5" font-weight="600" fill="#0F172A">Subtotal</text><text x="304" y="170" text-anchor="end" font-size="11.5" font-weight="600" fill="#0F172A">$24,800</text>
+    <rect x="44" y="286" width="146" height="32" rx="16" fill="#FFFFFF" stroke="#2563EB"/>
+    <path d="M60 296 L68 296 L74 302 L68 308 L60 308 Z" fill="none" stroke="#2563EB" stroke-width="1.5" stroke-linejoin="round"/><circle cx="64" cy="302" r="1.6" fill="#2563EB"/>
+    <text x="82" y="306" font-size="11.5" font-weight="600" fill="#2563EB">Request Discount</text>
+  </g>
+  <g class="disc"><text x="44" y="194" font-size="11.5" font-weight="600" fill="#15803D">Discount 10%</text><text x="304" y="194" text-anchor="end" font-size="11.5" font-weight="600" fill="#15803D">−$2,480</text></g>
+  <g class="push">
+    <g class="show"><text x="44" y="194" font-size="11.5" font-weight="500" fill="#334155">GST 15%</text><line x1="44" y1="208" x2="304" y2="208" stroke="#E2E8F0"/><text x="44" y="236" font-size="14" font-weight="700" fill="#0F172A">Total</text></g>
+    <g class="old"><text x="304" y="194" text-anchor="end" font-size="11.5" font-weight="500" fill="#334155">$3,720</text><text x="304" y="236" text-anchor="end" font-size="14" font-weight="700" fill="#0F172A">$28,520</text></g>
+    <g class="new"><text x="304" y="194" text-anchor="end" font-size="11.5" font-weight="500" fill="#334155">$3,348</text><text x="304" y="236" text-anchor="end" font-size="14" font-weight="700" fill="#15803D">$25,668</text></g>
+  </g>
+
+  <g class="req">
+    <rect x="344" y="24" width="272" height="160" rx="16" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+    <text x="364" y="50" font-size="12.5" font-weight="600" fill="#0F172A">Request discount</text>
+    <rect x="364" y="62" width="232" height="28" rx="14" fill="#F1F5F9"/>
+    <text x="400" y="80" text-anchor="middle" font-size="10.5" font-weight="600" fill="#64748B">New total</text>
+    <text x="478" y="80" text-anchor="middle" font-size="10.5" font-weight="600" fill="#64748B">Amount off</text>
+    <rect x="520" y="65" width="73" height="22" rx="11" fill="#FFFFFF" stroke="#CBD5E1"/>
+    <text x="556.5" y="80" text-anchor="middle" font-size="10.5" font-weight="700" fill="#0F172A">% off</text>
+    <rect x="364" y="102" width="96" height="30" rx="9" fill="#FFFFFF" stroke="#2563EB"/>
+    <text x="376" y="121.5" font-size="13" font-weight="600" fill="#0F172A">10</text><text x="446" y="121.5" text-anchor="end" font-size="11.5" font-weight="600" fill="#64748B">%</text>
+    <text x="472" y="115" font-size="10.5" font-weight="500" fill="#64748B">Comes off before GST,</text>
+    <text x="472" y="129" font-size="10.5" font-weight="500" fill="#64748B">then GST on the rest</text>
+    <rect x="364" y="144" width="232" height="28" rx="14" fill="#2563EB"/>
+    <text x="480" y="162" text-anchor="middle" font-size="11.5" font-weight="600" fill="#FFFFFF">Send request</text>
+  </g>
+
+  <g class="note">
+    <rect x="344" y="196" width="272" height="140" rx="16" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+    <circle cx="368" cy="221" r="11" fill="#DBEAFE"/>
+    <path d="M363.5 224.5 Q363.5 216 368 215.5 Q372.5 216 372.5 224.5 Z M366.4 226.6 Q368 228.6 369.6 226.6" fill="none" stroke="#2563EB" stroke-width="1.4" stroke-linejoin="round"/>
+    <text x="386" y="225" font-size="12" font-weight="600" fill="#0F172A">Discount request</text>
+    <text x="596" y="225" text-anchor="end" font-size="10.5" font-weight="500" fill="#94A3B8">just now</text>
+    <text x="364" y="254" font-size="11.5" font-weight="600" fill="#334155">Liam asked for 10% off</text>
+    <text x="364" y="272" font-size="11" font-weight="500" fill="#64748B">Smith Kitchen · $24,800 → $22,320 + GST</text>
+  </g>
+  <g class="btns">
+    <rect x="364" y="290" width="74" height="30" rx="15" fill="#16A34A"/><text x="401" y="309" text-anchor="middle" font-size="11.5" font-weight="600" fill="#FFFFFF">Accept</text>
+    <rect x="446" y="290" width="74" height="30" rx="15" fill="#F1F5F9" stroke="#CBD5E1"/><text x="483" y="309" text-anchor="middle" font-size="11.5" font-weight="600" fill="#0F172A">Counter</text>
+    <rect x="528" y="290" width="68" height="30" rx="15" fill="#FFFFFF" stroke="#FECACA"/><text x="562" y="309" text-anchor="middle" font-size="11.5" font-weight="600" fill="#DC2626">Decline</text>
+  </g>
+  <g class="ok">
+    <rect x="364" y="290" width="232" height="30" rx="15" fill="#F0FDF4" stroke="#BBF7D0"/>
+    <circle cx="384" cy="305" r="7" fill="#16A34A"/><path d="M380.6 305 L383.2 307.6 L387.6 302.4" fill="none" stroke="#FFFFFF" stroke-width="1.6"/>
+    <text x="398" y="309" font-size="11.5" font-weight="600" fill="#15803D">Accepted · new total everywhere</text>
+  </g>
+
+  <g class="rip1"><circle cx="112" cy="302" r="13" fill="none" stroke="#2563EB" stroke-width="2"/></g>
+  <g class="rip2"><circle cx="478" cy="158" r="13" fill="none" stroke="#FFFFFF" stroke-width="2"/></g>
+  <g class="rip3"><circle cx="398" cy="306" r="13" fill="none" stroke="#16A34A" stroke-width="2"/></g>
+  <g class="cur"><path d="M0 0 L0 17 L4.6 12.6 L7.6 19.4 L10.4 18.2 L7.4 11.6 L13.4 11.6 Z" fill="#0F172A" stroke="#FFFFFF" stroke-width="1.2" stroke-linejoin="round"/></g>
+</svg>

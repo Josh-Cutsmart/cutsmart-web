@@ -461,7 +461,10 @@ function QuickActionsPopup({
       const viewTop = viewport?.offsetTop ?? 0;
       const viewWidth = viewport?.width ?? window.innerWidth;
       const viewHeight = viewport?.height ?? window.innerHeight;
-      menu.style.maxHeight = `${Math.max(120, Math.floor(viewHeight - EDGE_PX * 2))}px`;
+      // (No taller than the room it's given off a lifted card — components/context-lift.tsx — where that's less.)
+      const liftRoom = Number(menu.dataset.liftRoom) || 0;
+      const fullRoom = viewHeight - EDGE_PX * 2;
+      menu.style.maxHeight = `${Math.max(120, Math.floor(liftRoom ? Math.min(liftRoom, fullRoom) : fullRoom))}px`;
       const width = menu.offsetWidth;
       const height = menu.offsetHeight;
       const left = Math.max(viewLeft + EDGE_PX, Math.min(alignEnd ? x - width : x, viewLeft + viewWidth - EDGE_PX - width));

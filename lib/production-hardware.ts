@@ -16,11 +16,20 @@ function toNum(value: unknown): number {
 // switched off for it in Company Settings) — each with the weights it comes in (Blum's M: 350–450 in 30 kg only, 500 and
 // 550 in 30 or 65) and its supplier's ID numbers: one for the length (a drawer type with no weights), and one for each
 // weight ("" — none) — and every weight it comes in at all.
+// Its Push to open too (a drawer type that comes in it — PUSH_TO_OPEN): where it comes in it at each length — at each weight
+// it comes in there (weight null: a drawer type with no weights) — each with its own ID number. Standard (no option) is the
+// length's or weight's own.
 export type DrawerHeightOption = {
   token: string;
   value: string;
   lengths: number[];
-  byLength: Array<{ length: number; weights: number[]; itemNumber: string; weightItemNumbers: Array<{ weight: number; itemNumber: string }> }>;
+  byLength: Array<{
+    length: number;
+    weights: number[];
+    itemNumber: string;
+    weightItemNumbers: Array<{ weight: number; itemNumber: string }>;
+    optionItemNumbers: Array<{ option: string; weight: number | null; itemNumber: string }>;
+  }>;
   weights: number[];
 };
 export type HardwareDrawerType = {
@@ -36,6 +45,9 @@ export type HardwareDrawerType = {
   // drawers are, unless one's set its own (null — none chosen: the lightest each comes in).
   hardwareWeights: number[];
   defaultWeight: number | null;
+  // What it comes in besides Standard: [PUSH_TO_OPEN] when it comes in push to open (Company Settings › Hardware, its
+  // switch), else none — picked on each drawer in the cutlist, with its own ID numbers.
+  hardwareOptions: string[];
   spaceRequirement: number | null;
 };
 export type HardwareTypeRow = {
@@ -134,6 +146,7 @@ export function normalizeDrawerTypes(raw: unknown): HardwareDrawerType[] {
           hardwareLengths: [],
           hardwareWeights: [],
           defaultWeight: null,
+          hardwareOptions: [],
           spaceRequirement: null,
         });
       }
@@ -154,8 +167,10 @@ export function normalizeDrawerTypes(raw: unknown): HardwareDrawerType[] {
       Array.isArray(raw) ? (raw as unknown[]).map((v) => toNum(v)).filter((v) => Number.isFinite(v) && v > 0) : [];
     const hardwareLengths = positiveNumbers(item.hardwareLengths);
     const hardwareWeights = positiveNumbers(item.hardwareWeights);
-    // Each height's lengths switched off, its lengths' weights switched off ("500|65"), and its ID numbers — by length
-    // ("500"), or length and weight ("500|65") — by its letter (lower case).
+    const hardwareOptions = item.pushToOpen ? [PUSH_TO_OPEN] : [];
+    // Each height's lengths switched off, its lengths' weights switched off ("500|65"), its options switched off at a length
+    // and weight ("500|65|Push to open", or "500||Push to open" with no weights), and its ID numbers — by length ("500"),
+    // length and weight ("500|65"), or those and an option ("500|65|Push to open") — by its letter (lower case).
     const details = item.heightDetails && typeof item.heightDetails === "object" ? (item.heightDetails as Record<string, unknown>) : {};
     const heightLetters: string[] = [];
     const heightOptions: DrawerHeightOption[] = [];
@@ -170,26 +185,37 @@ export function normalizeDrawerTypes(raw: unknown): HardwareDrawerType[] {
       const value = extractDrawerHeightValue(rawHeight, label);
       const own = details[key] && typeof details[key] === "object" ? (details[key] as Record<string, unknown>) : {};
       const lengthsOff = positiveNumbers(own.lengthsOff);
-      const combosOff = (Array.isArray(own.combosOff) ? (own.combosOff as unknown[]) : []).map((combo) => {
-        const [length, weight] = toStr(combo).split("|");
-        return { length: toNum(length), weight: toNum(weight) };
+      const allOff = (Array.isArray(own.combosOff) ? (own.combosOff as unknown[]) : []).map((combo) => {
+        const [length, weight, option] = toStr(combo).split("|");
+        return { length: toNum(length), weight: toStr(weight) ? toNum(weight) : null, option: toStr(option).toLowerCase() };
       });
+      const combosOff = allOff.filter((combo) => !combo.option);
+      const optionsOff = allOff.filter((combo) => combo.option);
       const itemNumbers = own.itemNumbers && typeof own.itemNumbers === "object" ? (own.itemNumbers as Record<string, unknown>) : {};
-      const itemNumberFor = (length: number, weight: number | null) =>
+      const itemNumberFor = (length: number, weight: number | null, option?: string) =>
         toStr(
           Object.entries(itemNumbers).find(([key]) => {
-            const [keyLength, keyWeight] = key.split("|");
-            return toNum(keyLength) === length && (weight == null ? keyWeight == null : toNum(keyWeight) === weight);
+            const [keyLength, keyWeight, keyOption] = key.split("|");
+            const weightMatches = weight == null ? !toStr(keyWeight) : toNum(keyWeight) === weight;
+            const optionMatches = option ? toStr(keyOption).toLowerCase() === option.toLowerCase() : !toStr(keyOption);
+            return toNum(keyLength) === length && weightMatches && optionMatches;
           })?.[1],
         );
       const lengths = hardwareLengths.filter((length) => !lengthsOff.includes(length));
       const byLength = lengths.map((length) => {
         const weights = hardwareWeights.filter((weight) => !combosOff.some((combo) => combo.length === length && combo.weight === weight));
+        // (Each option at each weight this length comes in — or with no weights, just at the length — unless switched off.)
+        const optionItemNumbers = (hardwareWeights.length ? weights : [null]).flatMap((weight) =>
+          hardwareOptions
+            .filter((option) => !optionsOff.some((off) => off.length === length && off.weight === weight && off.option === option.toLowerCase()))
+            .map((option) => ({ option, weight, itemNumber: itemNumberFor(length, weight, option) })),
+        );
         return {
           length,
           weights,
           itemNumber: itemNumberFor(length, null),
           weightItemNumbers: weights.map((weight) => ({ weight, itemNumber: itemNumberFor(length, weight) })),
+          optionItemNumbers,
         };
       });
       heightOptions.push({
@@ -216,11 +242,16 @@ export function normalizeDrawerTypes(raw: unknown): HardwareDrawerType[] {
       hardwareLengths,
       hardwareWeights,
       defaultWeight: hardwareWeights.includes(toNum(item.defaultWeight)) ? toNum(item.defaultWeight) : null,
+      hardwareOptions,
       spaceRequirement,
     });
   }
   return out;
 }
+
+// A drawer type's one option besides Standard (its "Push to open" switch in Company Settings › Hardware): the name its codes
+// are kept by ("500|65|Push to open") and its drawers are marked with.
+export const PUSH_TO_OPEN = "Push to open";
 
 export function normalizeHardwareRows(raw: unknown): HardwareTypeRow[] {
   if (!Array.isArray(raw)) return [];
@@ -285,23 +316,30 @@ export function hardwareItemNumber(row: HardwareTypeRow | null | undefined, kind
   return (kind === "hinge" ? row.hingeItemNumbers : row.otherItemNumbers)[key] ?? "";
 }
 
-// A drawer's supplier ID number: its drawer type's height's, at its runner length — and weight, each having its own.
-// No weight given (drawers don't have one chosen yet): the length's own, or its one weight's when it comes in just one;
-// "" when there's more than one to choose from, none, or it's not found.
+// A drawer's supplier ID number: its drawer type's height's, at its runner length — and weight, each having its own — and
+// option ("Push to open"; none — Standard). No weight given (drawers don't have one chosen yet): the length's own, or its one
+// weight's when it comes in just one; "" when there's more than one to choose from, none, or it's not found.
 export function drawerHeightItemNumber(
   row: HardwareTypeRow | null | undefined,
   drawerType: string,
   height: string,
   length: number,
   weight?: number,
+  option?: string,
 ): string {
   const drawerKey = String(drawerType || "").trim().toLowerCase();
   const heightKey = String(height || "").trim().toLowerCase();
   if (!row || !drawerKey || !heightKey || !(length > 0)) return "";
   const drawer = row.drawers.find((item) => item.name.trim().toLowerCase() === drawerKey);
-  const option = drawer?.heightOptions.find((item) => item.token.toLowerCase() === heightKey);
-  const entry = option?.byLength.find((item) => item.length === length);
+  const heightOption = drawer?.heightOptions.find((item) => item.token.toLowerCase() === heightKey);
+  const entry = heightOption?.byLength.find((item) => item.length === length);
   if (!entry) return "";
+  const optionKey = String(option || "").trim().toLowerCase();
+  if (optionKey) {
+    const matches = entry.optionItemNumbers.filter((item) => item.option.toLowerCase() === optionKey);
+    if (weight != null) return matches.find((item) => item.weight === weight)?.itemNumber || matches.find((item) => item.weight == null)?.itemNumber || "";
+    return matches.length === 1 ? matches[0].itemNumber : "";
+  }
   if (weight != null) return entry.weightItemNumbers.find((item) => item.weight === weight)?.itemNumber || entry.itemNumber;
   if (entry.itemNumber) return entry.itemNumber;
   return entry.weightItemNumbers.length === 1 ? entry.weightItemNumbers[0].itemNumber : "";

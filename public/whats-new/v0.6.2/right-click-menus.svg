@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>A shelf in the Cutlist List is right-clicked: it lifts, the rest dims, and its menu opens under it with Edit piece, Move, Duplicate, History, Change grain, Copy size and Delete; Move › Scullery puts it in another room</title>
+  <style>
+    .show { animation: show 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes show { 0%, 2% { opacity: 0; transform: translateY(10px); } 7%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .cur { animation: cur 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes cur { 0%, 4% { opacity: 0; transform: translate(520px, 320px); } 6% { opacity: 1; transform: translate(520px, 320px); } 11%, 14% { opacity: 1; transform: translate(214px, 108px); } 24%, 28% { opacity: 1; transform: translate(206px, 170px); } 36%, 42% { opacity: 1; transform: translate(388px, 220px); } 50% { opacity: 1; transform: translate(470px, 300px); } 54%, 100% { opacity: 0; transform: translate(470px, 300px); } }
+    .rip1 { animation: rip1 8s ease-out infinite both; }
+    @keyframes rip1 { 0%, 12% { opacity: 0; } 13% { opacity: .55; } 18%, 100% { opacity: 0; } }
+    .rip2 { animation: rip2 8s ease-out infinite both; }
+    @keyframes rip2 { 0%, 40% { opacity: 0; } 41% { opacity: .55; } 46%, 100% { opacity: 0; } }
+    .dim { animation: dim 8s ease infinite both; }
+    @keyframes dim { 0%, 13% { opacity: 0; } 16%, 42% { opacity: 1; } 46%, 100% { opacity: 0; } }
+    .lift { animation: lift 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes lift { 0%, 13% { opacity: 0; transform: translateY(0); } 16%, 42% { opacity: 1; transform: translateY(-3px); } 46%, 100% { opacity: 0; transform: translateY(0); } }
+    .menu { animation: menu 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes menu { 0%, 14% { opacity: 0; transform: translateY(-8px); } 19%, 42% { opacity: 1; transform: translateY(0); } 45%, 100% { opacity: 0; transform: translateY(0); } }
+    .hmove { animation: hmove 8s ease infinite both; }
+    @keyframes hmove { 0%, 23% { opacity: 0; } 25%, 42% { opacity: 1; } 45%, 100% { opacity: 0; } }
+    .sub { animation: sub 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes sub { 0%, 25% { opacity: 0; transform: translateX(-8px); } 29%, 42% { opacity: 1; transform: translateX(0); } 45%, 100% { opacity: 0; transform: translateX(0); } }
+    .hscul { animation: hscul 8s ease infinite both; }
+    @keyframes hscul { 0%, 35% { opacity: 0; } 37%, 42% { opacity: 1; } 45%, 100% { opacity: 0; } }
+    .gone { animation: gone 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes gone { 0%, 2% { opacity: 0; } 7%, 45% { opacity: 1; } 49%, 100% { opacity: 0; } }
+    .up { animation: up 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes up { 0%, 2% { opacity: 0; transform: translateY(0); } 7%, 48% { opacity: 1; transform: translateY(0); } 54%, 92% { opacity: 1; transform: translateY(-32px); } 96%, 100% { opacity: 0; transform: translateY(-32px); } }
+    .toast { animation: toast 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes toast { 0%, 50% { opacity: 0; transform: translateY(10px); } 55%, 90% { opacity: 1; transform: translateY(0); } 94%, 100% { opacity: 0; transform: translateY(0); } }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <filter id="pop" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0F172A" flood-opacity=".14"/>
+    </filter>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <g class="show">
+    <rect x="24" y="24" width="592" height="180" rx="16" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+    <path d="M24 40 Q24 24 40 24 L600 24 Q616 24 616 40 L616 60 L24 60 Z" fill="#E8EEF7"/>
+    <text x="44" y="47" font-size="10.5" font-weight="700" fill="#475569">Part</text>
+    <text x="122" y="47" font-size="10.5" font-weight="700" fill="#475569">Board</text>
+    <text x="300" y="47" font-size="10.5" font-weight="700" fill="#475569">Part name</text>
+    <text x="440" y="47" font-size="10.5" font-weight="700" fill="#475569">Height</text>
+    <text x="500" y="47" font-size="10.5" font-weight="700" fill="#475569">Width</text>
+    <text x="560" y="47" font-size="10.5" font-weight="700" fill="#475569">Qty</text>
+    <g>
+      <rect x="40" y="68" width="56" height="20" rx="10" fill="#DBEAFE"/><text x="68" y="82" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1E40AF">Gable</text>
+      <text x="122" y="82" font-size="11.5" font-weight="500" fill="#334155">Chalk White 18mm</text><text x="300" y="82" font-size="11.5" font-weight="500" fill="#334155">Left end</text>
+      <text x="440" y="82" font-size="11.5" font-weight="500" fill="#334155">720</text><text x="500" y="82" font-size="11.5" font-weight="500" fill="#334155">560</text><text x="560" y="82" font-size="11.5" font-weight="500" fill="#334155">2</text>
+      <line x1="36" y1="96" x2="604" y2="96" stroke="#EEF2F7"/>
+    </g>
+  </g>
+  <g class="gone">
+    <rect x="40" y="102" width="56" height="20" rx="10" fill="#E0E7FF"/><text x="68" y="116" text-anchor="middle" font-size="10.5" font-weight="600" fill="#3730A3">Shelf</text>
+    <text x="122" y="116" font-size="11.5" font-weight="500" fill="#334155">Chalk White 18mm</text><text x="300" y="116" font-size="11.5" font-weight="500" fill="#334155">Pantry shelf</text>
+    <text x="440" y="116" font-size="11.5" font-weight="500" fill="#334155">564</text><text x="500" y="116" font-size="11.5" font-weight="500" fill="#334155">540</text><text x="560" y="116" font-size="11.5" font-weight="500" fill="#334155">4</text>
+    <line x1="36" y1="130" x2="604" y2="130" stroke="#EEF2F7"/>
+  </g>
+  <g class="up">
+    <rect x="40" y="136" width="56" height="20" rx="10" fill="#FEF3C7"/><text x="68" y="150" text-anchor="middle" font-size="10.5" font-weight="600" fill="#92400E">Door</text>
+    <text x="122" y="150" font-size="11.5" font-weight="500" fill="#334155">Oak Veneer 18mm</text><text x="300" y="150" font-size="11.5" font-weight="500" fill="#334155">Tall door</text>
+    <text x="440" y="150" font-size="11.5" font-weight="500" fill="#334155">2100</text><text x="500" y="150" font-size="11.5" font-weight="500" fill="#334155">450</text><text x="560" y="150" font-size="11.5" font-weight="500" fill="#334155">2</text>
+    <line x1="36" y1="164" x2="604" y2="164" stroke="#EEF2F7"/>
+    <rect x="40" y="170" width="56" height="20" rx="10" fill="#DCFCE7"/><text x="68" y="184" text-anchor="middle" font-size="10.5" font-weight="600" fill="#166534">Back</text>
+    <text x="122" y="184" font-size="11.5" font-weight="500" fill="#334155">White 3mm</text><text x="300" y="184" font-size="11.5" font-weight="500" fill="#334155">Pantry back</text>
+    <text x="440" y="184" font-size="11.5" font-weight="500" fill="#334155">2100</text><text x="500" y="184" font-size="11.5" font-weight="500" fill="#334155">600</text><text x="560" y="184" font-size="11.5" font-weight="500" fill="#334155">1</text>
+  </g>
+
+  <g class="dim"><rect x="24" y="24" width="592" height="180" rx="16" fill="#0F172A" fill-opacity=".22"/></g>
+  <g class="lift">
+    <rect x="30" y="98" width="580" height="36" rx="10" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+    <rect x="40" y="106" width="56" height="20" rx="10" fill="#E0E7FF"/><text x="68" y="120" text-anchor="middle" font-size="10.5" font-weight="600" fill="#3730A3">Shelf</text>
+    <text x="122" y="120" font-size="11.5" font-weight="500" fill="#334155">Chalk White 18mm</text><text x="300" y="120" font-size="11.5" font-weight="500" fill="#334155">Pantry shelf</text>
+    <text x="440" y="120" font-size="11.5" font-weight="500" fill="#334155">564</text><text x="500" y="120" font-size="11.5" font-weight="500" fill="#334155">540</text><text x="560" y="120" font-size="11.5" font-weight="500" fill="#334155">4</text>
+  </g>
+
+  <g class="menu">
+    <rect x="150" y="140" width="176" height="200" rx="12" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+    <text x="164" y="160" font-size="10" font-weight="700" fill="#94A3B8">Shelf · Pantry shelf</text>
+  </g>
+  <g class="hmove"><rect x="156" y="190" width="164" height="24" rx="7" fill="#EFF6FF"/></g>
+  <g class="menu">
+    <text x="166" y="182" font-size="11.5" font-weight="600" fill="#0F172A">Edit piece</text>
+    <text x="166" y="206" font-size="11.5" font-weight="600" fill="#0F172A">Move</text><path d="M306 198 L310 202 L306 206" fill="none" stroke="#64748B" stroke-width="1.5" stroke-linecap="round"/>
+    <text x="166" y="230" font-size="11.5" font-weight="600" fill="#0F172A">Duplicate</text>
+    <text x="166" y="254" font-size="11.5" font-weight="600" fill="#0F172A">History</text>
+    <text x="166" y="278" font-size="11.5" font-weight="600" fill="#0F172A">Change grain</text>
+    <text x="166" y="302" font-size="11.5" font-weight="600" fill="#0F172A">Copy size</text>
+    <line x1="160" y1="312" x2="316" y2="312" stroke="#EEF2F7"/>
+    <text x="166" y="330" font-size="11.5" font-weight="600" fill="#DC2626">Delete</text>
+  </g>
+  <g class="sub">
+    <rect x="332" y="176" width="150" height="110" rx="12" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+    <text x="346" y="196" font-size="10" font-weight="700" fill="#94A3B8">Move to</text>
+    <text x="346" y="220" font-size="11.5" font-weight="600" fill="#94A3B8">Kitchen</text><path d="M458 214 L461 217.5 L467 210.5" fill="none" stroke="#94A3B8" stroke-width="1.6" stroke-linecap="round"/>
+  </g>
+  <g class="hscul"><rect x="338" y="230" width="138" height="24" rx="7" fill="#EFF6FF"/></g>
+  <g class="sub">
+    <text x="346" y="246" font-size="11.5" font-weight="600" fill="#0F172A">Scullery</text>
+    <text x="346" y="272" font-size="11.5" font-weight="600" fill="#0F172A">Laundry</text>
+  </g>
+
+  <g class="toast">
+    <rect x="392" y="296" width="224" height="40" rx="20" fill="#0F172A"/>
+    <text x="414" y="320" font-size="11.5" font-weight="600" fill="#FFFFFF">Moved to Scullery</text>
+    <text x="594" y="320" text-anchor="end" font-size="11.5" font-weight="700" fill="#93C5FD">Undo</text>
+  </g>
+
+  <g class="rip1"><circle cx="214" cy="110" r="13" fill="none" stroke="#2563EB" stroke-width="2"/></g>
+  <g class="rip2"><circle cx="388" cy="222" r="13" fill="none" stroke="#2563EB" stroke-width="2"/></g>
+  <g class="cur"><path d="M0 0 L0 17 L4.6 12.6 L7.6 19.4 L10.4 18.2 L7.4 11.6 L13.4 11.6 Z" fill="#0F172A" stroke="#FFFFFF" stroke-width="1.2" stroke-linejoin="round"/></g>
+</svg>

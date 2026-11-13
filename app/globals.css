@@ -854,8 +854,8 @@ body .drawer-toolbar-slim .cutsmart-quote-document-toolbar > .ck.ck-toolbar > .c
 
 /* The Cutlist Entry's drawer box (a drawer's depth and weight) opening out — its column widening (the grid sliding):
    .drawer-box-open / .drawer-box-close, the box as it opens and as it closes...
-   ...its height's letter growing from its short form's small circle to the open box's round one (and back), and its
-   weight's bubble growing from its short form's small one the same way. */
+   ...its height's letter growing from its short form's small circle to the open box's round one (and back), and — as it
+   closes — its weight's bubble fading in where its short form has it (its weight is picked in the drop-down under it). */
 /* (A drawer under its row's top one: sliding out from its column's own width — --drawer-box-from — to --drawer-box-to,
    and back.) */
 @keyframes drawer-box-grow {
@@ -894,22 +894,9 @@ body .drawer-toolbar-slim .cutsmart-quote-document-toolbar > .ck.ck-toolbar > .c
     font-size: 9px;
   }
 }
-@keyframes drawer-box-weight-in {
+@keyframes drawer-box-bubble-in {
   from {
-    height: 15px;
-    min-width: 15px;
-    padding-left: 3px;
-    padding-right: 3px;
-    font-size: 9px;
-  }
-}
-@keyframes drawer-box-weight-out {
-  to {
-    height: 15px;
-    min-width: 15px;
-    padding-left: 3px;
-    padding-right: 3px;
-    font-size: 9px;
+    opacity: 0;
   }
 }
 .drawer-box-open .drawer-box-letter {
@@ -918,19 +905,15 @@ body .drawer-toolbar-slim .cutsmart-quote-document-toolbar > .ck.ck-toolbar > .c
 .drawer-box-close .drawer-box-letter {
   animation: drawer-box-letter-shrink 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
 }
-.drawer-box-open .drawer-box-weight > button {
-  animation: drawer-box-weight-in 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-.drawer-box-close .drawer-box-weight > button {
-  animation: drawer-box-weight-out 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
+.drawer-box-close .drawer-box-bubble {
+  animation: drawer-box-bubble-in 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 @media (prefers-reduced-motion: reduce) {
   .drawer-box-grow,
   .drawer-box-shrink,
   .drawer-box-open .drawer-box-letter,
   .drawer-box-close .drawer-box-letter,
-  .drawer-box-open .drawer-box-weight > button,
-  .drawer-box-close .drawer-box-weight > button {
+  .drawer-box-close .drawer-box-bubble {
     animation: none;
   }
 }

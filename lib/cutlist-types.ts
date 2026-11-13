@@ -37,6 +37,9 @@ export type CutlistRow = {
   // ...and at a runner weight of their own (kg — Company Settings › Hardware: its drawer type's weights), by drawer the same
   // way. Any drawer not here is Auto: its drawer type's default weight, or the one its height and length come in.
   drawerWeights?: Record<string, string>;
+  // ...and its drawers marked push to open (their keys the same way — "B#2"), where its drawer type comes in push to open
+  // (Company Settings › Hardware). Any drawer not here is Standard.
+  drawerPushToOpen?: string[];
   quantity: string;
   clashing: string;
   clashLeft?: string;

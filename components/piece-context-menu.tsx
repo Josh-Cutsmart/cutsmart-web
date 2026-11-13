@@ -61,7 +61,9 @@ export function PieceContextMenu({
   const [openKey, setOpenKey] = useState("");
   const [subPos, setSubPos] = useState<{ left: number; top: number; maxHeight: number } | null>(null);
   const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   // Where it opens: at the pointer, moved in to stay on screen (its own height measured first).
   useLayoutEffect(() => {
@@ -131,7 +133,8 @@ export function PieceContextMenu({
         ref={menuRef}
         role="menu"
         aria-label={title}
-        className="fixed z-[2147483647] flex flex-col rounded-[12px] border p-1"
+        // (Opening as every dropdown does — out of the edge nearest the row it's off: components/context-lift.tsx.)
+        className="glass-menu-squeeze fixed z-[2147483647] flex flex-col rounded-[12px] border p-1"
         style={{ left: pos?.left ?? x, top: pos?.top ?? y, width, visibility: pos ? "visible" : "hidden", ...MENU_STYLE }}
         onContextMenu={(e) => e.preventDefault()}
       >
